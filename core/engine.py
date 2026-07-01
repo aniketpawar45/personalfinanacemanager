@@ -1,20 +1,31 @@
-import os, json, re
+import os, json, re, dateparser
 from groq import Groq
+from datetime import datetime
 
 client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
-# Updated to a stable, current model
-MODEL_NAME = "openai/gpt-oss-20b"
+
 
 def parse_expense_text(text):
     try:
+        # Ask AI to parse
         res = client.chat.completions.create(
-            messages=[{"role": "system", "content": "Extract amount (as float), category (Groceries, Dining, Transport, Utilities, Shopping, Other), and description. Output ONLY valid JSON."}, {"role": "user", "content": text}],
-            model=MODEL_NAME, response_format={"type": "json_object"}
+            messages=[{"role": "system",
+                       "content": "Extract amount (float), item_name, and potential date. Output ONLY valid JSON."},
+                      {"role": "user", "content": text}],
+            model="llama-3.1-8b-instant", response_format={"type": "json_object"}
         )
         data = json.loads(re.search(r'\{.*\}', res.choices[0].message.content, re.DOTALL).group(0))
-        return float(data.get("amount", 0)), data.get("category", "Other"), data.get("description", text)
+
+        # Simple extraction and Title Case normalization
+        amt = float(data.get("amount", 0))
+        item = data.get("item_name", text).title()
+
+        # Date logic
+        date_str = data.get("date") or text
+        date = dateparser.parse(date_str, settings={'PREFER_DATES_FROM': 'past'}) or datetime.now()
+
+        return amt, item, date
     except:
+        # Fallback
         match = re.search(r'\d+(\.\d+)?', text)
-        if match:
-            return float(match.group()), "Other", text
-        return 0.0, "Other", text
+        return float(match.group()) if match else 0.0, text.title(), datetime.now()

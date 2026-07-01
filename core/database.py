@@ -1,19 +1,27 @@
 import os
-from supabase import create_client, Client
+from supabase import create_client
+from datetime import datetime, timedelta
 
 supabase = create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_SERVICE_ROLE_KEY"))
 
-def get_category_id(category_name: str) -> int:
-    try:
-        response = supabase.table("categories").select("id").eq("category_name", category_name.title()).execute()
-        return response.data[0]['id'] if response.data else supabase.table("categories").select("id").eq("category_name", "Other").execute().data[0]['id']
-    except: return 1
+def get_all_categories():
+    return supabase.table("categories").select("id, category_name").execute().data
 
-def save_transaction(user_id, amount, category_id, description):
-    try:
-        supabase.table("transactions").insert({"user_id": str(user_id), "amount": amount, "category_id": category_id, "description": description}).execute()
-        return True
-    except: return False
+def check_duplicate(user_id, amount, description):
+    ten_seconds_ago = (datetime.now() - timedelta(seconds=10)).isoformat()
+    # Normalize for check
+    res = supabase.table("transactions").select("id").eq("user_id", str(user_id)).eq("amount", amount).eq("description", description.title()).gt("created_at", ten_seconds_ago).execute()
+    return len(res.data) > 0
+
+def save_transaction(user_id, amount, category_id, description, trans_date):
+    data = {
+        "user_id": str(user_id),
+        "amount": amount,
+        "category_id": category_id,
+        "description": description.title(), # Force Title Case
+        "transaction_date": trans_date.isoformat()
+    }
+    return supabase.table("transactions").insert(data).execute()
 
 def get_user_stats(user_id):
     try:
@@ -25,7 +33,7 @@ def get_user_stats(user_id):
             total += amt
             cat = row['categories']['category_name'] if row['categories'] else "Other"
             cats[cat] = cats.get(cat, 0) + amt
-        msg = f"📊 **Total: ₹{total:,.2f}**\n\n📂 **Breakdown:**\n"
+        msg = f"📊 **Total Spent: ₹{total:,.2f}**\n\n📂 **Breakdown:**\n"
         for c, a in sorted(cats.items(), key=lambda x: x[1], reverse=True):
             msg += f"• {c}: ₹{a:,.2f}\n"
         return msg
