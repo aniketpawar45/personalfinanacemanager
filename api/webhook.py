@@ -14,14 +14,19 @@ bot = Bot(token=os.environ.get("TELEGRAM_BOT_TOKEN"))
 async def handle(request: Request):
     update = await request.json()
 
+    # CALLBACK: User selected category
     if "callback_query" in update:
         q = update["callback_query"]
         if q["data"].startswith("cat:"):
+            # Split data: cat : ID : Amount : Description : Date
             parts = q["data"].split(":", 4)
             cat_id, amt, desc, d_str = parts[1], parts[2], parts[3], parts[4]
             date = datetime.fromisoformat(d_str)
 
-            cat_name = next((c['category_name'] for c in get_all_categories() if str(c['id']) == cat_id), "Other")
+            # Fetch dynamic name
+            cats = get_all_categories()
+            cat_name = next((c['category_name'] for c in cats if str(c['id']) == cat_id), "Other")
+
             save_transaction(q["from"]["id"], float(amt), int(cat_id), desc, date)
 
             await bot.edit_message_text(
@@ -30,6 +35,7 @@ async def handle(request: Request):
                 parse_mode="Markdown"
             )
 
+    # TEXT: User entered item
     elif "message" in update and "text" in update["message"]:
         msg, uid, cid = update["message"], update["message"]["from"]["id"], update["message"]["chat"]["id"]
         text = msg["text"].strip()
@@ -48,8 +54,8 @@ async def handle(request: Request):
                 last_cat_id = get_last_category(desc)
                 if last_cat_id:
                     save_transaction(uid, amt, last_cat_id, desc, date)
-                    cat_name = next((c['category_name'] for c in get_all_categories() if c['id'] == last_cat_id),
-                                    "Other")
+                    cats = get_all_categories()
+                    cat_name = next((c['category_name'] for c in cats if c['id'] == last_cat_id), "Other")
                     await bot.send_message(cid,
                                            f"✅ **Auto-Saved!**\n🛒 {desc}\n💰 ₹{amt}\n📂 {cat_name} ✅\n📅 {date.strftime('%d-%m-%Y')}",
                                            parse_mode="Markdown")
