@@ -4,7 +4,7 @@ from telegram import Bot
 from core.database import save_transaction, get_category_id, get_user_stats
 from core.engine import parse_expense_text
 
-# Mute httpx logs to prevent token leakage
+# --- SECURITY FIX: Mute httpx to prevent Telegram Token from leaking in Vercel logs ---
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 app = FastAPI()
