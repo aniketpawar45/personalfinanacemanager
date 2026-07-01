@@ -14,11 +14,8 @@ bot = Bot(token=os.environ.get("TELEGRAM_BOT_TOKEN"))
 async def handle(request: Request):
     update = await request.json()
 
-    # CALLBACK: User interaction
     if "callback_query" in update:
         q = update["callback_query"]
-
-        # Future date confirmation
         if q["data"].startswith("yes_future:"):
             _, amt, desc, d_str = q["data"].split(":", 3)
             date = datetime.fromisoformat(d_str)
@@ -43,7 +40,6 @@ async def handle(request: Request):
             await bot.edit_message_text(chat_id=q["message"]["chat"]["id"], message_id=q["message"]["message_id"],
                                         text="❌ Entry cancelled.")
 
-        # Category selection
         elif q["data"].startswith("cat:"):
             parts = q["data"].split(":", 4)
             cat_id, amt, desc, d_str = parts[1], parts[2], parts[3], parts[4]
@@ -55,7 +51,6 @@ async def handle(request: Request):
                                         text=f"✅ **Saved Successfully!**\n🛒 {desc}\n💰 ₹{amt}\n📂 {cat_name} ✅\n📅 {date.strftime('%d-%m-%Y')}",
                                         parse_mode="Markdown")
 
-    # MESSAGE: New input
     elif "message" in update and "text" in update["message"]:
         msg, uid, cid = update["message"], update["message"]["from"]["id"], update["message"]["chat"]["id"]
         text = msg["text"].strip()
@@ -65,7 +60,7 @@ async def handle(request: Request):
         elif text.startswith("/stats"):
             await bot.send_message(cid, get_user_stats(uid), parse_mode="Markdown")
         else:
-            amt, desc, date = parse_expense_text(text)
+            amt, desc, date, ai_cat = parse_expense_text(text)
             if amt <= 0:
                 await bot.send_message(cid, "⚠️ Could not parse amount.")
             elif check_duplicate(uid, amt, desc):
@@ -79,6 +74,11 @@ async def handle(request: Request):
                                        reply_markup=kb, parse_mode="Markdown")
             else:
                 last_cat_id = get_last_category(desc)
+                if not last_cat_id and ai_cat:
+                    cats = get_all_categories()
+                    match = next((c for c in cats if c['category_name'].lower() == ai_cat.lower()), None)
+                    if match: last_cat_id = match['id']
+
                 if last_cat_id:
                     save_transaction(uid, amt, last_cat_id, desc, date)
                     cats = get_all_categories()
