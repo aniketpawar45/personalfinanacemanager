@@ -21,7 +21,7 @@ def parse_expense_text(text):
         date_str = data.get("date") or text
         parsed_date = dateparser.parse(
             date_str,
-            settings={'PREFER_DATES_FROM': 'past', 'RELATIVE_BASE': datetime.now(),'DATE_ORDER': 'DMY'}
+            settings={'PREFER_DATES_FROM': 'past', 'RELATIVE_BASE': datetime.now()}
         ) or datetime.now()
 
         # Enforce current year
