@@ -5,11 +5,9 @@ from datetime import datetime, timedelta
 supabase = create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_SERVICE_ROLE_KEY"))
 
 def get_all_categories():
-    # Dynamically fetches your categories from the DB
     return supabase.table("categories").select("id, category_name").execute().data
 
 def get_last_category(description):
-    # Finds the last used category for this specific item
     res = supabase.table("transactions").select("category_id").eq("description", description.title()).order("created_at", desc=True).limit(1).execute()
     return res.data[0]['category_id'] if res.data else None
 

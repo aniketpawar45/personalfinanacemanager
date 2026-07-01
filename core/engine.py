@@ -16,16 +16,14 @@ def parse_expense_text(text):
         data = json.loads(re.search(r'\{.*\}', res.choices[0].message.content, re.DOTALL).group(0))
 
         amt = float(data.get("amount", 0))
-        item = data.get("item_name", text).title()  # Enforce Title Case
+        item = data.get("item_name", text).title()
 
-        # Parse and dynamically force current year
         date_str = data.get("date") or text
         parsed_date = dateparser.parse(
             date_str,
             settings={'PREFER_DATES_FROM': 'past', 'RELATIVE_BASE': datetime(datetime.now().year, 1, 1)}
         ) or datetime.now()
 
-        # Ensure it stays in the current year
         if parsed_date.year != datetime.now().year:
             parsed_date = parsed_date.replace(year=datetime.now().year)
 

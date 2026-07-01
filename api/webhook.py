@@ -14,28 +14,46 @@ bot = Bot(token=os.environ.get("TELEGRAM_BOT_TOKEN"))
 async def handle(request: Request):
     update = await request.json()
 
-    # CALLBACK: User selected category
     if "callback_query" in update:
         q = update["callback_query"]
-        if q["data"].startswith("cat:"):
-            # Split data: cat : ID : Amount : Description : Date
+
+        # 1. Handle Future Date Warning
+        if q["data"].startswith("yes_future:"):
+            # Yes, proceed to category selection
+            _, amt, desc, d_str = q["data"].split(":", 3)
+            date = datetime.fromisoformat(d_str)
+            last_cat_id = get_last_category(desc)
+
+            if last_cat_id:
+                save_transaction(q["from"]["id"], float(amt), last_cat_id, desc, date)
+                cat_name = next((c['category_name'] for c in get_all_categories() if c['id'] == last_cat_id), "Other")
+                await bot.edit_message_text(chat_id=q["message"]["chat"]["id"], message_id=q["message"]["message_id"],
+                                            text=f"✅ **Saved!**\n🛒 {desc}\n💰 ₹{amt}\n📂 {cat_name} ✅\n📅 {date.strftime('%d-%m-%Y')}",
+                                            parse_mode="Markdown")
+            else:
+                categories = get_all_categories()
+                buttons = [[InlineKeyboardButton(c['category_name'],
+                                                 callback_data=f"cat:{c['id']}:{amt}:{desc}:{date.isoformat()}")] for c
+                           in categories]
+                await bot.edit_message_text(chat_id=q["message"]["chat"]["id"], message_id=q["message"]["message_id"],
+                                            text=f"❓ Select category for **{desc}** (₹{amt}):",
+                                            reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+
+        elif q["data"] == "no_future":
+            await bot.edit_message_text(chat_id=q["message"]["chat"]["id"], message_id=q["message"]["message_id"],
+                                        text="❌ Entry cancelled.")
+
+        # 2. Handle Category Selection
+        elif q["data"].startswith("cat:"):
             parts = q["data"].split(":", 4)
             cat_id, amt, desc, d_str = parts[1], parts[2], parts[3], parts[4]
             date = datetime.fromisoformat(d_str)
-
-            # Fetch dynamic name
-            cats = get_all_categories()
-            cat_name = next((c['category_name'] for c in cats if str(c['id']) == cat_id), "Other")
-
+            cat_name = next((c['category_name'] for c in get_all_categories() if str(c['id']) == cat_id), "Other")
             save_transaction(q["from"]["id"], float(amt), int(cat_id), desc, date)
+            await bot.edit_message_text(chat_id=q["message"]["chat"]["id"], message_id=q["message"]["message_id"],
+                                        text=f"✅ **Saved Successfully!**\n🛒 {desc}\n💰 ₹{amt}\n📂 {cat_name} ✅\n📅 {date.strftime('%d-%m-%Y')}",
+                                        parse_mode="Markdown")
 
-            await bot.edit_message_text(
-                chat_id=q["message"]["chat"]["id"], message_id=q["message"]["message_id"],
-                text=f"✅ **Saved Successfully!**\n🛒 {desc}\n💰 ₹{amt}\n📂 {cat_name} ✅\n📅 {date.strftime('%d-%m-%Y')}",
-                parse_mode="Markdown"
-            )
-
-    # TEXT: User entered item
     elif "message" in update and "text" in update["message"]:
         msg, uid, cid = update["message"], update["message"]["from"]["id"], update["message"]["chat"]["id"]
         text = msg["text"].strip()
@@ -50,12 +68,22 @@ async def handle(request: Request):
                 await bot.send_message(cid, "⚠️ Could not parse amount.")
             elif check_duplicate(uid, amt, desc):
                 await bot.send_message(cid, "⚠️ Duplicate entry prevented.")
+
+            # FUTURE DATE WARNING
+            elif date > datetime.now():
+                kb = InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("Yes", callback_data=f"yes_future:{amt}:{desc}:{date.isoformat()}"),
+                      InlineKeyboardButton("No", callback_data="no_future")]])
+                await bot.send_message(cid,
+                                       f"⚠️ **Future date detected!**\nYou entered {date.strftime('%d-%m-%Y')}.\nAre you sure you want to save this?",
+                                       reply_markup=kb, parse_mode="Markdown")
+
             else:
                 last_cat_id = get_last_category(desc)
                 if last_cat_id:
                     save_transaction(uid, amt, last_cat_id, desc, date)
-                    cats = get_all_categories()
-                    cat_name = next((c['category_name'] for c in cats if c['id'] == last_cat_id), "Other")
+                    cat_name = next((c['category_name'] for c in get_all_categories() if c['id'] == last_cat_id),
+                                    "Other")
                     await bot.send_message(cid,
                                            f"✅ **Auto-Saved!**\n🛒 {desc}\n💰 ₹{amt}\n📂 {cat_name} ✅\n📅 {date.strftime('%d-%m-%Y')}",
                                            parse_mode="Markdown")
@@ -64,7 +92,6 @@ async def handle(request: Request):
                     buttons = [[InlineKeyboardButton(c['category_name'],
                                                      callback_data=f"cat:{c['id']}:{amt}:{desc}:{date.isoformat()}")]
                                for c in categories]
-                    kb = InlineKeyboardMarkup(buttons)
-                    await bot.send_message(cid, f"❓ Select category for **{desc}** (₹{amt}):", reply_markup=kb,
-                                           parse_mode="Markdown")
+                    await bot.send_message(cid, f"❓ Select category for **{desc}** (₹{amt}):",
+                                           reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
     return {"status": "ok"}
