@@ -7,9 +7,12 @@ supabase = create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABAS
 def get_all_categories():
     return supabase.table("categories").select("id, category_name").execute().data
 
+def get_last_category(description):
+    res = supabase.table("transactions").select("category_id").eq("description", description.title()).order("created_at", desc=True).limit(1).execute()
+    return res.data[0]['category_id'] if res.data else None
+
 def check_duplicate(user_id, amount, description):
     ten_seconds_ago = (datetime.now() - timedelta(seconds=10)).isoformat()
-    # Normalize for check
     res = supabase.table("transactions").select("id").eq("user_id", str(user_id)).eq("amount", amount).eq("description", description.title()).gt("created_at", ten_seconds_ago).execute()
     return len(res.data) > 0
 
@@ -18,7 +21,7 @@ def save_transaction(user_id, amount, category_id, description, trans_date):
         "user_id": str(user_id),
         "amount": amount,
         "category_id": category_id,
-        "description": description.title(), # Force Title Case
+        "description": description.title(),
         "transaction_date": trans_date.isoformat()
     }
     return supabase.table("transactions").insert(data).execute()

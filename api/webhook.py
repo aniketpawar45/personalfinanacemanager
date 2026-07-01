@@ -2,7 +2,7 @@ import os, logging
 from fastapi import FastAPI, Request
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from datetime import datetime
-from core.database import save_transaction, get_all_categories, check_duplicate, get_user_stats
+from core.database import save_transaction, get_all_categories, check_duplicate, get_user_stats, get_last_category
 from core.engine import parse_expense_text
 
 logging.getLogger("httpx").setLevel(logging.WARNING)
@@ -19,11 +19,10 @@ def get_icon(cat):
 async def handle(request: Request):
     update = await request.json()
 
-    # CALLBACK: User picked a category button
+    # CALLBACK: User selected category
     if "callback_query" in update:
         q = update["callback_query"]
         if q["data"].startswith("cat:"):
-            # Split into 4 parts: cat, cat_id, amt, desc, date
             parts = q["data"].split(":", 4)
             cat_id, amt, desc, d_str = parts[1], parts[2], parts[3], parts[4]
             date = datetime.fromisoformat(d_str)
@@ -32,9 +31,8 @@ async def handle(request: Request):
             save_transaction(q["from"]["id"], float(amt), int(cat_id), desc, date)
 
             await bot.edit_message_text(
-                chat_id=q["message"]["chat"]["id"],
-                message_id=q["message"]["message_id"],
-                text=f"✅ **Saved Successfully!**\n🛒 {desc}\n💰 ₹{amt}\n📂 {get_icon(cat_name)} {cat_name}\n📅 {date.strftime('%d-%m-%Y')}",
+                chat_id=q["message"]["chat"]["id"], message_id=q["message"]["message_id"],
+                text=f"✅ **Saved Successfully!**\n🛒 {desc}\n💰 ₹{amt}\n📂 {get_icon(cat_name)} {cat_name} ✅\n📅 {date.strftime('%d-%m-%Y')}",
                 parse_mode="Markdown"
             )
 
@@ -54,11 +52,20 @@ async def handle(request: Request):
             elif check_duplicate(uid, amt, desc):
                 await bot.send_message(cid, "⚠️ Duplicate entry prevented.")
             else:
-                categories = get_all_categories()
-                buttons = [[InlineKeyboardButton(c['category_name'],
-                                                 callback_data=f"cat:{c['id']}:{amt}:{desc}:{date.isoformat()}")] for c
-                           in categories]
-                kb = InlineKeyboardMarkup(buttons)
-                await bot.send_message(cid, f"❓ Select category for **{desc}** (₹{amt}):", reply_markup=kb,
-                                       parse_mode="Markdown")
+                last_cat_id = get_last_category(desc)
+                if last_cat_id:
+                    save_transaction(uid, amt, last_cat_id, desc, date)
+                    cat_name = next((c['category_name'] for c in get_all_categories() if c['id'] == last_cat_id),
+                                    "Other")
+                    await bot.send_message(cid,
+                                           f"✅ **Auto-Saved!**\n🛒 {desc}\n💰 ₹{amt}\n📂 {get_icon(cat_name)} {cat_name} ✅\n📅 {date.strftime('%d-%m-%Y')}",
+                                           parse_mode="Markdown")
+                else:
+                    categories = get_all_categories()
+                    buttons = [[InlineKeyboardButton(c['category_name'],
+                                                     callback_data=f"cat:{c['id']}:{amt}:{desc}:{date.isoformat()}")]
+                               for c in categories]
+                    kb = InlineKeyboardMarkup(buttons)
+                    await bot.send_message(cid, f"❓ Select category for **{desc}** (₹{amt}):", reply_markup=kb,
+                                           parse_mode="Markdown")
     return {"status": "ok"}
