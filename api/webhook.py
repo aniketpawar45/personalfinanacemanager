@@ -1,65 +1,34 @@
-import os
+import os, logging
 from fastapi import FastAPI, Request
 from telegram import Bot
-# We added get_user_stats to the import below:
 from core.database import save_transaction, get_category_id, get_user_stats
 from core.engine import parse_expense_text
 
-app = FastAPI()
+# Mute httpx logs to prevent token leakage
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
-TELEGRAM_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
-bot = Bot(token=TELEGRAM_TOKEN) if TELEGRAM_TOKEN else None
+app = FastAPI()
+bot = Bot(token=os.environ.get("TELEGRAM_BOT_TOKEN"))
 
 
 @app.post("/api/webhook")
-async def telegram_webhook(request: Request):
-    """Receives updates from Telegram and processes them."""
-    if not bot:
-        return {"status": "error", "message": "Bot token not configured"}
+async def handle(request: Request):
+    update = await request.json()
+    if "message" in update and "text" in update["message"]:
+        msg = update["message"]
+        text = msg["text"].strip()
+        uid = msg["from"]["id"]
+        cid = msg["chat"]["id"]
 
-    try:
-        update = await request.json()
-
-        if "message" in update and "text" in update["message"]:
-            chat_id = update["message"]["chat"]["id"]
-            user_id = update["message"]["from"]["id"]
-            user_text = update["message"]["text"].strip()
-
-            # --- 🚀 COMMAND ROUTING ---
-            # 1. Handle /start command
-            if user_text.startswith("/start"):
-                welcome = "👋 Welcome to Finance Manager!\nJust type what you spent (e.g., 'Spent 500 on groceries') and I'll track it. Type /stats to see your spending."
-                await bot.send_message(chat_id=chat_id, text=welcome)
-                return {"status": "ok"}
-
-            # 2. Handle /stats command
-            if user_text.startswith("/stats"):
-                stats_msg = get_user_stats(user_id)
-                # We use parse_mode="Markdown" to make the text bold and pretty
-                await bot.send_message(chat_id=chat_id, text=stats_msg, parse_mode="Markdown")
-                return {"status": "ok"}
-            # ---------------------------
-
-            # --- 🧠 NATURAL LANGUAGE PROCESSING ---
-            # If it's not a command, treat it as a new expense
-            amount, category_name, description = parse_expense_text(user_text)
-
-            if amount > 0:
-                category_id = get_category_id(category_name)
-                success = save_transaction(user_id, amount, category_id, description)
-
-                if success:
-                    msg = f"✅ Saved: ₹{amount} for {category_name}\n📝 {description}"
-                else:
-                    msg = "❌ Failed to save transaction to database."
-
-                await bot.send_message(chat_id=chat_id, text=msg)
+        if text.startswith("/start"):
+            await bot.send_message(cid, "👋 Type expense (e.g., 'Milk 40') or /stats.")
+        elif text.startswith("/stats"):
+            await bot.send_message(cid, get_user_stats(uid), parse_mode="Markdown")
+        else:
+            amt, cat, desc = parse_expense_text(text)
+            if amt > 0:
+                save_transaction(uid, amt, get_category_id(cat), desc)
+                await bot.send_message(cid, f"✅ Saved: ₹{amt} ({cat})")
             else:
-                await bot.send_message(chat_id=chat_id,
-                                       text="⚠️ Could not understand the amount. Please try again (e.g., 'Milk 40').")
-
-        return {"status": "ok"}
-
-    except Exception as e:
-        print(f"Webhook Error: {e}")
-        return {"status": "error"}
+                await bot.send_message(cid, "⚠️ Could not parse amount.")
+    return {"status": "ok"}
