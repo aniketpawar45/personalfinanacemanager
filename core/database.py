@@ -4,12 +4,8 @@ from datetime import datetime, timedelta
 
 supabase = create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_SERVICE_ROLE_KEY"))
 
-def get_category_id(category_name: str) -> int:
-    try:
-        res = supabase.table("categories").select("id").eq("category_name", category_name.title()).execute()
-        if res.data: return res.data[0]['id']
-        return supabase.table("categories").select("id").eq("category_name", "Other").execute().data[0]['id']
-    except: return 1
+def get_all_categories():
+    return supabase.table("categories").select("id, category_name").execute().data
 
 def check_duplicate(user_id, amount, description):
     ten_seconds_ago = (datetime.now() - timedelta(seconds=10)).isoformat()
