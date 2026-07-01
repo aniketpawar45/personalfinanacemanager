@@ -21,16 +21,27 @@ def get_icon(cat):
 async def handle(request: Request):
     update = await request.json()
 
+    # --- 1. HANDLE BUTTON CLICKS (CALLBACK QUERIES) ---
     if "callback_query" in update:
         q = update["callback_query"]
         if q["data"].startswith("confirm:"):
+            # Format: confirm:amt:cat:desc:date_iso
             _, amt, cat, desc, d_str = q["data"].split(":")
             date = datetime.fromisoformat(d_str)
             save_transaction(q["from"]["id"], float(amt), get_category_id(cat), desc, date)
-            await bot.edit_message_text(chat_id=q["message"]["chat"]["id"], message_id=q["message"]["message_id"],
-                                        text=f"✅ **Saved Successfully!**\n🛒 {desc}\n💰 ₹{amt}\n📂 {get_icon(cat)} {cat}\n📅 {date.strftime('%d-%m-%Y')}",
-                                        parse_mode="Markdown")
 
+            # Update the message with the final formatted receipt
+            await bot.edit_message_text(
+                chat_id=q["message"]["chat"]["id"],
+                message_id=q["message"]["message_id"],
+                text=f"✅ **Saved Successfully!**\n🛒 {desc}\n💰 ₹{amt}\n📂 {get_icon(cat)} {cat}\n📅 {date.strftime('%d-%m-%Y')}",
+                parse_mode="Markdown"
+            )
+        elif q["data"] == "cancel":
+            await bot.edit_message_text(chat_id=q["message"]["chat"]["id"], message_id=q["message"]["message_id"],
+                                        text="❌ Entry cancelled.")
+
+    # --- 2. HANDLE NEW MESSAGES ---
     elif "message" in update and "text" in update["message"]:
         msg, uid, cid = update["message"], update["message"]["from"]["id"], update["message"]["chat"]["id"]
         text = msg["text"].strip()
@@ -41,14 +52,22 @@ async def handle(request: Request):
             await bot.send_message(cid, get_user_stats(uid), parse_mode="Markdown")
         else:
             amt, cat, desc, date = parse_expense_text(text)
+
             if amt <= 0:
                 await bot.send_message(cid, "⚠️ Could not parse amount.")
             elif check_duplicate(uid, amt, desc):
-                await bot.send_message(cid, "⚠️ Duplicate detected! Please wait 10 seconds.")
+                await bot.send_message(cid, "⚠️ Duplicate detected! You just added this.")
             else:
-                kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Confirm",
-                                                                 callback_data=f"confirm:{amt}:{cat}:{desc}:{date.isoformat()}")]])
-                await bot.send_message(cid,
-                                       f"❓ Confirm entry?\n🛒 {desc}\n💰 ₹{amt}\n📂 {get_icon(cat)} {cat}\n📅 {date.strftime('%d-%m-%Y')}",
-                                       reply_markup=kb, parse_mode="Markdown")
+                # Create the confirmation button
+                kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ Confirm", callback_data=f"confirm:{amt}:{cat}:{desc}:{date.isoformat()}")],
+                    [InlineKeyboardButton("❌ Cancel", callback_data="cancel")]
+                ])
+                # Show the interactive prompt
+                await bot.send_message(
+                    cid,
+                    f"❓ **Confirm entry?**\n🛒 {desc}\n💰 ₹{amt}\n📂 {get_icon(cat)} {cat}\n📅 {date.strftime('%d-%m-%Y')}",
+                    reply_markup=kb,
+                    parse_mode="Markdown"
+                )
     return {"status": "ok"}
