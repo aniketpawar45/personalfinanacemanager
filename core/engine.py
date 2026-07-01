@@ -7,9 +7,10 @@ client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
 def parse_expense_text(text):
     try:
+        # Use AI to extract the date string first
         res = client.chat.completions.create(
             messages=[{"role": "system",
-                       "content": "Extract 'amount' (float), 'item_name', and 'date' (if mentioned). Output ONLY valid JSON."},
+                       "content": "Extract 'amount' (float), 'item_name', and 'date' (if mentioned). If no date mentioned, return null. Output ONLY valid JSON."},
                       {"role": "user", "content": text}],
             model="llama-3.1-8b-instant", response_format={"type": "json_object"}
         )
@@ -18,12 +19,14 @@ def parse_expense_text(text):
         amt = float(data.get("amount", 0))
         item = data.get("item_name", text).title()
 
+        # Parse using TODAY as the relative base
         date_str = data.get("date") or text
         parsed_date = dateparser.parse(
             date_str,
-            settings={'PREFER_DATES_FROM': 'past', 'RELATIVE_BASE': datetime(datetime.now().year, 1, 1)}
+            settings={'PREFER_DATES_FROM': 'past', 'RELATIVE_BASE': datetime.now()}
         ) or datetime.now()
 
+        # If the year is missing or wrong, force current year
         if parsed_date.year != datetime.now().year:
             parsed_date = parsed_date.replace(year=datetime.now().year)
 
