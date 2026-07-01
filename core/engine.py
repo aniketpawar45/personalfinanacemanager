@@ -7,7 +7,6 @@ client = Groq(api_key=os.environ.get("GROQ_API_KEY"))
 
 def parse_expense_text(text):
     try:
-        # Prompt AI to extract fields
         res = client.chat.completions.create(
             messages=[{"role": "system",
                        "content": "Extract amount (float), category (Groceries, Dining, Transport, Utilities, Shopping, Other), item_name, and potential date (if mentioned). Output ONLY valid JSON."},
@@ -16,7 +15,6 @@ def parse_expense_text(text):
         )
         data = json.loads(re.search(r'\{.*\}', res.choices[0].message.content, re.DOTALL).group(0))
 
-        # Date parsing logic
         date_input = data.get("date") or text
         date = dateparser.parse(date_input, settings={'PREFER_DATES_FROM': 'past'}) or datetime.now()
 

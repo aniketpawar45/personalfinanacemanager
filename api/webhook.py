@@ -21,7 +21,6 @@ def get_icon(cat):
 async def handle(request: Request):
     update = await request.json()
 
-    # Callback Query (Buttons)
     if "callback_query" in update:
         q = update["callback_query"]
         if q["data"].startswith("confirm:"):
@@ -32,7 +31,6 @@ async def handle(request: Request):
                                         text=f"✅ **Saved Successfully!**\n🛒 {desc}\n💰 ₹{amt}\n📂 {get_icon(cat)} {cat}\n📅 {date.strftime('%d-%m-%Y')}",
                                         parse_mode="Markdown")
 
-    # Text Messages
     elif "message" in update and "text" in update["message"]:
         msg, uid, cid = update["message"], update["message"]["from"]["id"], update["message"]["chat"]["id"]
         text = msg["text"].strip()
@@ -49,8 +47,7 @@ async def handle(request: Request):
                 await bot.send_message(cid, "⚠️ Duplicate detected! Please wait 10 seconds.")
             else:
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton("✅ Confirm",
-                                                                 callback_data=f"confirm:{amt}:{cat}:{desc}:{date.isoformat()}")],
-                                           [InlineKeyboardButton("❌ Cancel", callback_data="cancel")]])
+                                                                 callback_data=f"confirm:{amt}:{cat}:{desc}:{date.isoformat()}")]])
                 await bot.send_message(cid,
                                        f"❓ Confirm entry?\n🛒 {desc}\n💰 ₹{amt}\n📂 {get_icon(cat)} {cat}\n📅 {date.strftime('%d-%m-%Y')}",
                                        reply_markup=kb, parse_mode="Markdown")
