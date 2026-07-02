@@ -15,9 +15,12 @@ if not GROQ_API_KEY:
 
 client = AsyncGroq(api_key=GROQ_API_KEY)
 
+# 🚀 Prompt updated to accept slang, abbreviations, or non-dictionary text
 SYSTEM_PROMPT = """
 You are a highly precise financial extraction tool. 
-Extract the 'amount' (numeric float), 'item_name' (string), and 'date_str' (string, if mentioned).
+Extract the 'amount' (numeric float).
+Extract the 'item_name' (string). Treat ANY non-numeric text as the item name, even abbreviations or slang.
+Extract the 'date_str' (string, if mentioned).
 If no valid amount is found, return 0.0.
 If no valid item is found, return "".
 Return strictly valid JSON matching the exact schema requested. 
@@ -45,6 +48,12 @@ async def parse_expense_text(text: str) -> tuple[float, str, datetime]:
         
         amt = float(extraction.amount) if extraction.amount is not None else 0.0
         item = str(extraction.item_name).title().strip() if extraction.item_name else ""
+        
+        # 🚀 ENTERPRISE FAILSAFE: If the AI over-filtered the text as gibberish, extract it manually.
+        if not item or item == str(amt) or item == "0.0":
+            fallback_item = re.sub(r'\d+(\.\d+)?', '', processed_text).strip().title()
+            if fallback_item:
+                item = fallback_item
         
         # EXPLICIT VALIDATION: No silent failures
         if amt <= 0:
