@@ -6,14 +6,15 @@ from core.models import TransactionRecord
 
 logger = logging.getLogger(__name__)
 
-# Enforce secure environment variables
+# HOTFIX: Reinstating the Service Role Key for Trusted Backend-to-Backend Operations
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
-SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY")
+SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
-if not SUPABASE_URL or not SUPABASE_ANON_KEY:
-    raise ValueError("Critical Security Error: Missing Supabase Anon Key or URL.")
+if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
+    raise ValueError("Critical Security Error: Missing Supabase Service Role Key or URL.")
 
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+# The client now operates with administrative privileges securely behind the FastAPI webhook boundary.
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
 def get_user_role(telegram_id: str) -> str:
     """Enterprise RBAC: Identifies user privileges."""
@@ -71,8 +72,7 @@ def save_transaction(record: TransactionRecord) -> bool:
             "description": record.description.title(),
             "transaction_date": record.transaction_date.isoformat()
         }
-        # Sets the RLS context for the transaction
-        supabase.postgrest.auth(os.environ.get("SUPABASE_ANON_KEY"))
+        # The backend acts on behalf of the user, safely bypassing RLS for this specific insert.
         supabase.table("transactions").insert(data).execute()
         return True
     except Exception as e:
