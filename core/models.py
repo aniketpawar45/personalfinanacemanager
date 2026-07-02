@@ -3,8 +3,8 @@ from typing import Optional
 from datetime import datetime
 
 class ExpenseExtraction(BaseModel):
-    amount: float = Field(description="The numeric amount of the expense.")
-    item_name: str = Field(description="The name of the item or service purchased.")
+    amount: Optional[float] = Field(default=0.0, description="The numeric amount of the expense. Return 0.0 if not found.")
+    item_name: Optional[str] = Field(default="", description="The name of the item or service. Return empty string if not found.")
     date_str: Optional[str] = Field(default=None, description="The date mentioned, if any.")
 
 class TransactionRecord(BaseModel):

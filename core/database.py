@@ -6,22 +6,21 @@ from core.models import TransactionRecord
 
 logger = logging.getLogger(__name__)
 
-# HOTFIX: Using Service Role Key for Trusted Backend-to-Backend Operations
+# Trusted Backend Operations
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
 if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
     raise ValueError("Critical Security Error: Missing Supabase Service Role Key or URL.")
 
-# The client now operates with administrative privileges securely behind the FastAPI webhook boundary.
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
-# Global In-Memory Cache for Sub-Millisecond Reads
+# Global In-Memory Cache
 _CATEGORY_CACHE = []
 
 
 def load_categories_into_cache():
-    """Enterprise Initialization: Fetches categories from DB into Vercel RAM during app boot."""
+    """Fetches categories from DB into Vercel RAM during app boot."""
     global _CATEGORY_CACHE
     try:
         response = supabase.table("categories").select("id, category_name").execute()
@@ -33,9 +32,8 @@ def load_categories_into_cache():
 
 
 def get_all_categories() -> list:
-    """O(1) Memory Lookup. Bypasses the database on warm executions."""
+    """O(1) Memory Lookup."""
     global _CATEGORY_CACHE
-    # Failsafe: If cache is empty for any reason, fetch synchronously
     if not _CATEGORY_CACHE:
         load_categories_into_cache()
     return _CATEGORY_CACHE
@@ -54,6 +52,7 @@ def get_user_role(telegram_id: str) -> str:
 
 
 def get_last_category(description: str) -> int | None:
+    """Historical lookup to auto-categorize recurring items."""
     try:
         response = supabase.table("transactions") \
             .select("category_id") \
@@ -92,7 +91,6 @@ def save_transaction(record: TransactionRecord) -> bool:
             "description": record.description.title(),
             "transaction_date": record.transaction_date.isoformat()
         }
-        # The backend acts on behalf of the user, safely bypassing RLS for this specific insert.
         supabase.table("transactions").insert(data).execute()
         return True
     except Exception as e:

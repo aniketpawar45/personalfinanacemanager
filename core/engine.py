@@ -18,16 +18,16 @@ client = AsyncGroq(api_key=GROQ_API_KEY)
 SYSTEM_PROMPT = """
 You are a highly precise financial extraction tool. 
 Extract the 'amount' (numeric float), 'item_name' (string), and 'date_str' (string, if mentioned).
+If no valid amount is found, return 0.0.
+If no valid item is found, return "".
 Return strictly valid JSON matching the exact schema requested. 
 Do NOT include any conversational text.
 """
 
 
 async def parse_expense_text(text: str) -> tuple[float, str, datetime]:
-    # 🚀 NLP Pre-Processing: Intelligently separate squished letters and numbers
-    # "milk6565" -> "milk 6565"
+    # NLP Pre-Processing: Separate squished letters and numbers
     processed_text = re.sub(r'([a-zA-Z])(\d)', r'\1 \2', text)
-    # "150coffee" -> "150 coffee"
     processed_text = re.sub(r'(\d)([a-zA-Z])', r'\1 \2', processed_text)
 
     try:
@@ -44,10 +44,16 @@ async def parse_expense_text(text: str) -> tuple[float, str, datetime]:
         raw_json = response.choices[0].message.content
         extraction = ExpenseExtraction.model_validate_json(raw_json)
 
-        amt = float(extraction.amount)
-        item = extraction.item_name.title()
-        date_str = extraction.date_str or processed_text
+        amt = float(extraction.amount) if extraction.amount is not None else 0.0
+        item = str(extraction.item_name).title().strip() if extraction.item_name else ""
 
+        # EXPLICIT VALIDATION: No silent failures
+        if amt <= 0:
+            raise ValueError(f"I couldn't find a valid price in '{text}'. Please include an amount (e.g., 'Milk 40').")
+        if not item or item == str(amt) or item == "0.0":
+            raise ValueError(f"I couldn't identify the item name in '{text}'. Please tell me what the expense was for.")
+
+        date_str = extraction.date_str or processed_text
         parsed_date = dateparser.parse(
             date_str,
             settings={'PREFER_DATES_FROM': 'past', 'RELATIVE_BASE': datetime.now()}
@@ -58,13 +64,22 @@ async def parse_expense_text(text: str) -> tuple[float, str, datetime]:
 
         return amt, item, parsed_date
 
+    except ValueError as ve:
+        raise ve
     except Exception as e:
-        logger.warning(f"AI parsing failed, falling back to regex: {str(e)}")
-        # Hardened regex fallback using the pre-processed text
-        match = re.search(r'\d+(\.\d+)?', processed_text)
-        amt = float(match.group()) if match else 0.0
+        logger.warning(f"AI parsing failed completely: {str(e)}")
 
-        # Strip the numeric amount out of the text to leave just the clean item name
+        match = re.search(r'\d+(\.\d+)?', processed_text)
+        if not match:
+            raise ValueError(
+                f"I couldn't understand the format of '{text}'. Please use a standard format like 'Uber 200'.")
+
+        amt = float(match.group())
+        if amt <= 0:
+            raise ValueError(f"The amount must be greater than zero. You entered: '{text}'.")
+
         item_name = re.sub(r'\d+(\.\d+)?', '', processed_text).strip().title()
+        if not item_name:
+            raise ValueError(f"I found the amount ({amt}), but I couldn't find the item name in '{text}'.")
 
         return amt, item_name, datetime.now()
