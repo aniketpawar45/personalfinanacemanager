@@ -7,7 +7,7 @@ from datetime import datetime
 
 from core.database import (
     save_transaction, get_all_categories, check_duplicate, 
-    get_user_stats, get_global_stats, get_last_category, get_user_role,
+    get_user_stats, get_global_stats, get_user_role,
     load_categories_into_cache
 )
 from core.engine import parse_expense_text
@@ -61,18 +61,17 @@ async def handle_webhook(request: Request):
             if data.startswith("yes_future:"):
                 _, amt, desc, d_str = data.split(":", 3)
                 date = datetime.fromisoformat(d_str)
-                last_cat_id = get_last_category(desc)
                 
-                if last_cat_id:
-                    record = TransactionRecord(user_id=uid, amount=float(amt), category_id=last_cat_id, description=desc, transaction_date=date)
-                    save_transaction(record)
-                    cats = get_all_categories()
-                    cat_name = next((c['category_name'] for c in cats if c['id'] == last_cat_id), "Other")
-                    await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"✅ **Saved Successfully!**\n📝 {desc}\n💰 {amt}\n📁 {cat_name} 📅 {date.strftime('%d-%m-%Y')}", parse_mode="Markdown")
-                else:
-                    categories = get_all_categories()
-                    buttons = [[InlineKeyboardButton(c['category_name'], callback_data=f"cat:{c['id']}:{amt}:{desc}:{date.isoformat()}")] for c in categories]
-                    await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"🆕 **New item detected!**\n\n📝 **Item:** {desc}\n💰 **Amount:** {amt}\n\nPlease select a category:", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+                # ALWAYS enforce manual category selection
+                categories = get_all_categories()
+                buttons = [[InlineKeyboardButton(c['category_name'], callback_data=f"cat:{c['id']}:{amt}:{desc}:{date.isoformat()}")] for c in categories]
+                await bot.edit_message_text(
+                    chat_id=chat_id, 
+                    message_id=message_id, 
+                    text=f"📅 **Future date confirmed!**\n\n📝 **Item:** {desc}\n💰 **Amount:** {amt}\n\nPlease select a category:", 
+                    reply_markup=InlineKeyboardMarkup(buttons), 
+                    parse_mode="Markdown"
+                )
 
             elif data == "no_future":
                 await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="🚫 Entry cancelled.")
@@ -87,7 +86,12 @@ async def handle_webhook(request: Request):
                 
                 cats = get_all_categories()
                 cat_name = next((c['category_name'] for c in cats if c['id'] == cat_id), "Other")
-                await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"✅ **Saved Successfully!**\n📝 {desc}\n💰 {amt}\n📁 {cat_name} 📅 {date.strftime('%d-%m-%Y')}", parse_mode="Markdown")
+                await bot.edit_message_text(
+                    chat_id=chat_id, 
+                    message_id=message_id, 
+                    text=f"✅ **Saved Successfully!**\n📝 {desc}\n💰 {amt}\n📁 {cat_name} 📅 {date.strftime('%d-%m-%Y')}", 
+                    parse_mode="Markdown"
+                )
 
         elif "message" in update and "text" in update["message"]:
             msg = update["message"]
@@ -129,17 +133,15 @@ async def handle_webhook(request: Request):
                     ])
                     await bot.send_message(cid, f"⏳ **Future date detected!**\nYou entered {date.strftime('%d-%m-%Y')}.\nAre you sure?", reply_markup=kb, parse_mode="Markdown")
                 else:
-                    last_cat_id = get_last_category(desc)
-                    if last_cat_id:
-                        record = TransactionRecord(user_id=uid, amount=amt, category_id=last_cat_id, description=desc, transaction_date=date)
-                        save_transaction(record)
-                        cats = get_all_categories()
-                        cat_name = next((c['category_name'] for c in cats if c['id'] == last_cat_id), "Other")
-                        await bot.send_message(cid, f"⚡ **Auto-Saved!**\n📝 {desc}\n💰 {amt}\n📁 {cat_name} 📅 {date.strftime('%d-%m-%Y')}", parse_mode="Markdown")
-                    else:
-                        categories = get_all_categories()
-                        buttons = [[InlineKeyboardButton(c['category_name'], callback_data=f"cat:{c['id']}:{amt}:{desc}:{date.isoformat()}")] for c in categories]
-                        await bot.send_message(cid, f"🆕 **New item detected!**\n\n📝 **Item:** {desc}\n💰 **Amount:** {amt}\n\nPlease select a category:", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+                    # ALWAYS enforce manual category selection
+                    categories = get_all_categories()
+                    buttons = [[InlineKeyboardButton(c['category_name'], callback_data=f"cat:{c['id']}:{amt}:{desc}:{date.isoformat()}")] for c in categories]
+                    await bot.send_message(
+                        cid, 
+                        f"🆕 **New item detected!**\n\n📝 **Item:** {desc}\n💰 **Amount:** {amt}\n\nPlease select a category:", 
+                        reply_markup=InlineKeyboardMarkup(buttons), 
+                        parse_mode="Markdown"
+                    )
 
         return {"status": "ok"}
         
