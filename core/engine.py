@@ -15,18 +15,19 @@ if not GROQ_API_KEY:
 
 client = AsyncGroq(api_key=GROQ_API_KEY)
 
+# 🚀 Hardened Prompt to prevent 'null' generations
 SYSTEM_PROMPT = """
 You are a highly precise financial extraction tool. 
 Extract the 'amount' (numeric float), 'item_name' (string), and 'date_str' (string, if mentioned).
+If no valid amount is found in the text, return 0.0 for the amount.
+If no valid item is found, return "" for the item_name.
 Return strictly valid JSON matching the exact schema requested. 
 Do NOT include any conversational text.
 """
 
 async def parse_expense_text(text: str) -> tuple[float, str, datetime]:
     # 🚀 NLP Pre-Processing: Intelligently separate squished letters and numbers
-    # "milk6565" -> "milk 6565"
     processed_text = re.sub(r'([a-zA-Z])(\d)', r'\1 \2', text)
-    # "150coffee" -> "150 coffee"
     processed_text = re.sub(r'(\d)([a-zA-Z])', r'\1 \2', processed_text)
     
     try:
@@ -43,8 +44,9 @@ async def parse_expense_text(text: str) -> tuple[float, str, datetime]:
         raw_json = response.choices[0].message.content
         extraction = ExpenseExtraction.model_validate_json(raw_json)
         
-        amt = float(extraction.amount)
-        item = extraction.item_name.title()
+        # Safely extract with fallbacks to defaults
+        amt = float(extraction.amount) if extraction.amount is not None else 0.0
+        item = str(extraction.item_name).title() if extraction.item_name else text.title()
         date_str = extraction.date_str or processed_text
         
         parsed_date = dateparser.parse(
