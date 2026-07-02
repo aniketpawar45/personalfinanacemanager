@@ -1,13 +1,12 @@
 import os
 import logging
-from functools import lru_cache
 from supabase import create_client, Client
 from datetime import datetime, timedelta
 from core.models import TransactionRecord
 
 logger = logging.getLogger(__name__)
 
-# HOTFIX: Reinstating the Service Role Key for Trusted Backend-to-Backend Operations
+# HOTFIX: Using Service Role Key for Trusted Backend-to-Backend Operations
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
@@ -16,6 +15,30 @@ if not SUPABASE_URL or not SUPABASE_SERVICE_ROLE_KEY:
 
 # The client now operates with administrative privileges securely behind the FastAPI webhook boundary.
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+
+# Global In-Memory Cache for Sub-Millisecond Reads
+_CATEGORY_CACHE = []
+
+
+def load_categories_into_cache():
+    """Enterprise Initialization: Fetches categories from DB into Vercel RAM during app boot."""
+    global _CATEGORY_CACHE
+    try:
+        response = supabase.table("categories").select("id, category_name").execute()
+        if response.data:
+            _CATEGORY_CACHE = response.data
+            logger.info("✅ Categories successfully loaded into memory cache.")
+    except Exception as e:
+        logger.error(f"Failed to load categories into cache: {str(e)}")
+
+
+def get_all_categories() -> list:
+    """O(1) Memory Lookup. Bypasses the database on warm executions."""
+    global _CATEGORY_CACHE
+    # Failsafe: If cache is empty for any reason, fetch synchronously
+    if not _CATEGORY_CACHE:
+        load_categories_into_cache()
+    return _CATEGORY_CACHE
 
 
 def get_user_role(telegram_id: str) -> str:
@@ -28,17 +51,6 @@ def get_user_role(telegram_id: str) -> str:
     except Exception as e:
         logger.error(f"Failed to fetch user role: {str(e)}")
         return "unauthenticated"
-
-
-@lru_cache(maxsize=1)
-def get_all_categories() -> list:
-    """Fetches categories from Supabase and caches them in Vercel's memory to eliminate network latency."""
-    try:
-        response = supabase.table("categories").select("id, category_name").execute()
-        return response.data
-    except Exception as e:
-        logger.error(f"Failed to fetch categories: {str(e)}")
-        return []
 
 
 def get_last_category(description: str) -> int | None:
