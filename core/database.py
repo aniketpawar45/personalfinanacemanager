@@ -1,43 +1,116 @@
 import os
-from supabase import create_client
+import logging
+from supabase import create_client, Client
 from datetime import datetime, timedelta
+from core.models import TransactionRecord
 
-supabase = create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_SERVICE_ROLE_KEY"))
+logger = logging.getLogger(__name__)
 
-def get_all_categories():
-    return supabase.table("categories").select("id, category_name").execute().data
+# Enforce secure environment variables
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY")
 
-def get_last_category(description):
-    res = supabase.table("transactions").select("category_id").eq("description", description.title()).order("created_at", desc=True).limit(1).execute()
-    return res.data[0]['category_id'] if res.data else None
+if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+    raise ValueError("Critical Security Error: Missing Supabase Anon Key or URL.")
 
-def check_duplicate(user_id, amount, description):
-    ten_seconds_ago = (datetime.now() - timedelta(seconds=10)).isoformat()
-    res = supabase.table("transactions").select("id").eq("user_id", str(user_id)).eq("amount", amount).eq("description", description.title()).gt("created_at", ten_seconds_ago).execute()
-    return len(res.data) > 0
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
 
-def save_transaction(user_id, amount, category_id, description, trans_date):
-    data = {
-        "user_id": str(user_id),
-        "amount": amount,
-        "category_id": category_id,
-        "description": description.title(),
-        "transaction_date": trans_date.isoformat()
-    }
-    return supabase.table("transactions").insert(data).execute()
-
-def get_user_stats(user_id):
+def get_user_role(telegram_id: str) -> str:
+    """Enterprise RBAC: Identifies user privileges."""
     try:
-        data = supabase.table("transactions").select("amount, categories(category_name)").eq("user_id", str(user_id)).execute().data
-        if not data: return "📊 No expenses logged."
-        total, cats = 0.0, {}
+        response = supabase.table("app_users").select("role").eq("telegram_id", telegram_id).execute()
+        if response.data:
+            return response.data[0]['role']
+        return "unauthenticated"
+    except Exception as e:
+        logger.error(f"Failed to fetch user role: {str(e)}")
+        return "unauthenticated"
+
+def get_all_categories() -> list:
+    try:
+        response = supabase.table("categories").select("id, category_name").execute()
+        return response.data
+    except Exception as e:
+        logger.error(f"Failed to fetch categories: {str(e)}")
+        return []
+
+def get_last_category(description: str) -> int | None:
+    try:
+        response = supabase.table("transactions")\
+            .select("category_id")\
+            .eq("description", description.title())\
+            .order("created_at", desc=True)\
+            .limit(1)\
+            .execute()
+        return response.data[0]['category_id'] if response.data else None
+    except Exception as e:
+        logger.error(f"Failed to fetch last category: {str(e)}")
+        return None
+
+def check_duplicate(user_id: str, amount: float, description: str) -> bool:
+    try:
+        ten_seconds_ago = (datetime.now() - timedelta(seconds=10)).isoformat()
+        response = supabase.table("transactions")\
+            .select("id")\
+            .eq("user_id", user_id)\
+            .eq("amount", amount)\
+            .eq("description", description.title())\
+            .gt("created_at", ten_seconds_ago)\
+            .execute()
+        return len(response.data) > 0
+    except Exception as e:
+        logger.error(f"Duplicate check failed: {str(e)}")
+        return False
+
+def save_transaction(record: TransactionRecord) -> bool:
+    try:
+        data = {
+            "user_id": record.user_id,
+            "amount": record.amount,
+            "category_id": record.category_id,
+            "description": record.description.title(),
+            "transaction_date": record.transaction_date.isoformat()
+        }
+        # Sets the RLS context for the transaction
+        supabase.postgrest.auth(os.environ.get("SUPABASE_ANON_KEY"))
+        supabase.table("transactions").insert(data).execute()
+        return True
+    except Exception as e:
+        logger.error(f"Transaction save failed: {str(e)}")
+        return False
+
+def get_user_stats(user_id: str) -> str:
+    try:
+        response = supabase.rpc("get_user_statistics", {"p_user_id": user_id}).execute()
+        data = response.data
+        if not data:
+            return "📉 No personal expenses logged."
+            
+        total = sum(float(row['total_spent']) for row in data)
+        msg = f"📊 **Personal Total Spent: ₹{total:,.2f}**\n\n**Breakdown:**\n"
         for row in data:
-            amt = float(row['amount'])
-            total += amt
-            cat = row['categories']['category_name'] if row['categories'] else "Other"
-            cats[cat] = cats.get(cat, 0) + amt
-        msg = f"📊 **Total Spent: ₹{total:,.2f}**\n\n📂 **Breakdown:**\n"
-        for c, a in sorted(cats.items(), key=lambda x: x[1], reverse=True):
-            msg += f"• {c}: ₹{a:,.2f}\n"
+            cat_name = row.get('category_name') or 'Other'
+            amt = float(row.get('total_spent', 0))
+            msg += f"🔹 {cat_name}: ₹{amt:,.2f}\n"
         return msg
-    except: return "❌ Error fetching stats."
+    except Exception as e:
+        logger.error(f"Stats generation failed: {str(e)}")
+        return "⚠️ Error fetching personal stats."
+
+def get_global_stats() -> str:
+    try:
+        response = supabase.rpc("get_global_statistics").execute()
+        data = response.data
+        if not data:
+            return "📉 No expenses logged in the global ledger."
+            
+        total = sum(float(row['total_spent']) for row in data)
+        msg = f"🌍 **GLOBAL LEDGER Total: ₹{total:,.2f}**\n\n**Breakdown:**\n"
+        for row in data:
+            cat_name = row.get('category_name') or 'Other'
+            amt = float(row.get('total_spent', 0))
+            msg += f"🔹 {cat_name}: ₹{amt:,.2f}\n"
+        return msg
+    except Exception as e:
+        logger.error(f"Global stats generation failed: {str(e)}")
+        return "⚠️ Error fetching global stats."
