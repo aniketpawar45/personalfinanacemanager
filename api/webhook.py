@@ -1,5 +1,6 @@
 import os
 import logging
+import httpx
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, Header, Depends
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
@@ -10,7 +11,8 @@ from core.database import (
     get_user_stats, get_global_stats, get_last_category, get_user_role,
     load_categories_into_cache
 )
-from core.engine import parse_expense_text
+# Import the new transcription function
+from core.engine import parse_expense_text, transcribe_audio
 from core.models import TransactionRecord
 
 logging.basicConfig(level=logging.INFO)
@@ -91,60 +93,104 @@ async def handle_webhook(request: Request):
                 else:
                     await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⚠️ **I'm sorry, I couldn't save that to the database right now.** Please try again.", parse_mode="Markdown")
 
-        elif "message" in update and "text" in update["message"]:
+        # 🚀 NEW: Intelligent Payload Routing (Text, Voice, and Fallbacks)
+        elif "message" in update:
             msg = update["message"]
             uid = str(msg["from"]["id"])
             chat_id = msg["chat"]["id"]
-            text = msg["text"].strip()
-            
-            await bot.send_chat_action(chat_id=chat_id, action='typing')
             
             user_role = get_user_role(uid)
             is_admin = (user_role == "admin")
-
-            if text.startswith("/start"):
-                await bot.send_message(chat_id, "👋 Send expense (e.g., 'Coffee 40'). \nAdmins can use /allstats.")
+            
+            text = None
+            
+            if "text" in msg:
+                text = msg["text"].strip()
                 
-            elif text.startswith("/stats"):
-                stats_msg = get_user_stats(uid)
-                await bot.send_message(chat_id, stats_msg, parse_mode="Markdown")
-                
-            elif text.startswith("/allstats"):
-                if not is_admin:
-                    await bot.send_message(chat_id, "⛔ **Access Denied:** I'm sorry, but you need admin privileges to view the global ledger.")
-                else:
-                    global_stats_msg = get_global_stats()
-                    await bot.send_message(chat_id, global_stats_msg, parse_mode="Markdown")
-                    
-            else:
+            elif "voice" in msg:
+                await bot.send_chat_action(chat_id=chat_id, action='typing')
                 try:
-                    amt, desc, date = await parse_expense_text(text)
+                    file_id = msg["voice"]["file_id"]
                     
-                    if check_duplicate(uid, amt, desc):
-                        await bot.send_message(chat_id, "⚠️ **Duplicate prevented!** It looks like you just saved this exact transaction.")
-                    elif date > datetime.now():
-                        kb = InlineKeyboardMarkup([
-                            [InlineKeyboardButton("Yes", callback_data=f"yes_future:{amt}:{desc}:{date.isoformat()}"),
-                             InlineKeyboardButton("No", callback_data="no_future")]
-                        ])
-                        await bot.send_message(chat_id, f"⏳ **Future date detected!**\nYou entered {date.strftime('%d-%m-%Y')}.\nAre you sure?", reply_markup=kb, parse_mode="Markdown")
-                    else:
-                        last_cat_id = get_last_category(desc)
-                        if last_cat_id:
-                            record = TransactionRecord(user_id=uid, amount=amt, category_id=last_cat_id, description=desc, transaction_date=date)
-                            if save_transaction(record):
-                                cats = get_all_categories()
-                                cat_name = next((c['category_name'] for c in cats if c['id'] == last_cat_id), "Other")
-                                await bot.send_message(chat_id, f"⚡ **Auto-Saved!**\n📝 {desc}\n💰 {amt}\n📁 {cat_name} 📅 {date.strftime('%d-%m-%Y')}", parse_mode="Markdown")
-                            else:
-                                await bot.send_message(chat_id, "⚠️ **I'm sorry, I encountered an issue saving your transaction.** Please try again.", parse_mode="Markdown")
-                        else:
-                            categories = get_all_categories()
-                            buttons = [[InlineKeyboardButton(c['category_name'], callback_data=f"cat:{c['id']}:{amt}:{desc}:{date.isoformat()}")] for c in categories]
-                            await bot.send_message(chat_id, f"🆕 **New item detected!**\n\n📝 **Item:** {desc}\n💰 **Amount:** {amt}\n\nPlease select a category:", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
-                            
+                    # Download the voice file from Telegram
+                    async with httpx.AsyncClient() as http_client:
+                        file_info_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/getFile?file_id={file_id}"
+                        file_info = (await http_client.get(file_info_url)).json()
+                        
+                        if not file_info.get("ok"):
+                            raise ValueError("I couldn't access the voice file from Telegram.")
+                        
+                        file_path = file_info["result"]["file_path"]
+                        download_url = f"https://api.telegram.org/file/bot{TELEGRAM_BOT_TOKEN}/{file_path}"
+                        audio_bytes = (await http_client.get(download_url)).content
+                        
+                    # Send to Groq for Transcription
+                    text = await transcribe_audio(audio_bytes)
+                    if not text:
+                        raise ValueError("I couldn't hear any clear words in that message.")
+                        
+                    # UX: Confirm what we heard before processing
+                    await bot.send_message(chat_id, f"🗣️ *Heard:* {text}", parse_mode="Markdown")
+                    
                 except ValueError as ve:
                     await bot.send_message(chat_id, f"⚠️ {str(ve)}")
+                    return {"status": "ok"}
+                except Exception as e:
+                    logger.error(f"Voice processing error: {str(e)}")
+                    await bot.send_message(chat_id, "⚠️ I encountered an error processing your voice message.")
+                    return {"status": "ok"}
+            else:
+                # Catch Photos, Stickers, Documents (Eliminates Silent Failures)
+                await bot.send_message(chat_id, "⚠️ I currently only understand text and voice messages.")
+                return {"status": "ok"}
+
+            # Process the extracted 'text' (whether it was typed or spoken)
+            if text:
+                await bot.send_chat_action(chat_id=chat_id, action='typing')
+                
+                if text.startswith("/start"):
+                    await bot.send_message(chat_id, "👋 Send an expense (e.g., 'Coffee 40') or send a Voice Note! \nAdmins can use /allstats.")
+                    
+                elif text.startswith("/stats"):
+                    stats_msg = get_user_stats(uid)
+                    await bot.send_message(chat_id, stats_msg, parse_mode="Markdown")
+                    
+                elif text.startswith("/allstats"):
+                    if not is_admin:
+                        await bot.send_message(chat_id, "⛔ **Access Denied:** I'm sorry, but you need admin privileges to view the global ledger.")
+                    else:
+                        global_stats_msg = get_global_stats()
+                        await bot.send_message(chat_id, global_stats_msg, parse_mode="Markdown")
+                        
+                else:
+                    try:
+                        amt, desc, date = await parse_expense_text(text)
+                        
+                        if check_duplicate(uid, amt, desc):
+                            await bot.send_message(chat_id, "⚠️ **Duplicate prevented!** It looks like you just saved this exact transaction.")
+                        elif date > datetime.now():
+                            kb = InlineKeyboardMarkup([
+                                [InlineKeyboardButton("Yes", callback_data=f"yes_future:{amt}:{desc}:{date.isoformat()}"),
+                                 InlineKeyboardButton("No", callback_data="no_future")]
+                            ])
+                            await bot.send_message(chat_id, f"⏳ **Future date detected!**\nYou said {date.strftime('%d-%m-%Y')}.\nAre you sure?", reply_markup=kb, parse_mode="Markdown")
+                        else:
+                            last_cat_id = get_last_category(desc)
+                            if last_cat_id:
+                                record = TransactionRecord(user_id=uid, amount=amt, category_id=last_cat_id, description=desc, transaction_date=date)
+                                if save_transaction(record):
+                                    cats = get_all_categories()
+                                    cat_name = next((c['category_name'] for c in cats if c['id'] == last_cat_id), "Other")
+                                    await bot.send_message(chat_id, f"⚡ **Auto-Saved!**\n📝 {desc}\n💰 {amt}\n📁 {cat_name} 📅 {date.strftime('%d-%m-%Y')}", parse_mode="Markdown")
+                                else:
+                                    await bot.send_message(chat_id, "⚠️ **I'm sorry, I encountered an issue saving your transaction.** Please try again.", parse_mode="Markdown")
+                            else:
+                                categories = get_all_categories()
+                                buttons = [[InlineKeyboardButton(c['category_name'], callback_data=f"cat:{c['id']}:{amt}:{desc}:{date.isoformat()}")] for c in categories]
+                                await bot.send_message(chat_id, f"🆕 **New item detected!**\n\n📝 **Item:** {desc}\n💰 **Amount:** {amt}\n\nPlease select a category:", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+                                
+                    except ValueError as ve:
+                        await bot.send_message(chat_id, f"⚠️ {str(ve)}")
 
         return {"status": "ok"}
         
