@@ -17,10 +17,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-# 🚀 Enterprise Application Lifecycle Management
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Executes ONCE when the Vercel container boots up to prevent network latency
     load_categories_into_cache()
     yield
 
@@ -35,7 +33,6 @@ if not TELEGRAM_BOT_TOKEN:
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
 def verify_telegram_token(x_telegram_bot_api_secret_token: str = Header(None)):
-    """Enterprise Webhook Security Perimeter"""
     if not TELEGRAM_SECRET_TOKEN:
         logger.warning("TELEGRAM_SECRET_TOKEN is not configured in environment.")
         return
@@ -50,7 +47,6 @@ async def handle_webhook(request: Request):
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
-    # Initialize chat_id so the global exception handler knows who to apologize to
     chat_id = None
 
     try:
@@ -68,13 +64,12 @@ async def handle_webhook(request: Request):
                 
                 if last_cat_id:
                     record = TransactionRecord(user_id=uid, amount=float(amt), category_id=last_cat_id, description=desc, transaction_date=date)
-                    # ✅ Check if save was actually successful
                     if save_transaction(record):
                         cats = get_all_categories()
                         cat_name = next((c['category_name'] for c in cats if c['id'] == last_cat_id), "Other")
                         await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"✅ **Saved Successfully!**\n📝 {desc}\n💰 {amt}\n📁 {cat_name} 📅 {date.strftime('%d-%m-%Y')}", parse_mode="Markdown")
                     else:
-                        await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⚠️ **I'm sorry, I couldn't save that to the database right now.** Please try again in a moment.", parse_mode="Markdown")
+                        await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⚠️ **I'm sorry, I couldn't save that to the database right now.** Please try again.", parse_mode="Markdown")
                 else:
                     categories = get_all_categories()
                     buttons = [[InlineKeyboardButton(c['category_name'], callback_data=f"cat:{c['id']}:{amt}:{desc}:{date.isoformat()}")] for c in categories]
@@ -89,13 +84,12 @@ async def handle_webhook(request: Request):
                 date = datetime.fromisoformat(d_str)
                 
                 record = TransactionRecord(user_id=uid, amount=amt, category_id=cat_id, description=desc, transaction_date=date)
-                # ✅ Check if save was actually successful
                 if save_transaction(record):
                     cats = get_all_categories()
                     cat_name = next((c['category_name'] for c in cats if c['id'] == cat_id), "Other")
                     await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"✅ **Saved Successfully!**\n📝 {desc}\n💰 {amt}\n📁 {cat_name} 📅 {date.strftime('%d-%m-%Y')}", parse_mode="Markdown")
                 else:
-                    await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⚠️ **I'm sorry, I couldn't save that to the database right now.** Please try again in a moment.", parse_mode="Markdown")
+                    await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="⚠️ **I'm sorry, I couldn't save that to the database right now.** Please try again.", parse_mode="Markdown")
 
         elif "message" in update and "text" in update["message"]:
             msg = update["message"]
@@ -103,7 +97,6 @@ async def handle_webhook(request: Request):
             chat_id = msg["chat"]["id"]
             text = msg["text"].strip()
             
-            # Enterprise UX: Immediately show "typing..." while AI and DB process
             await bot.send_chat_action(chat_id=chat_id, action='typing')
             
             user_role = get_user_role(uid)
@@ -124,39 +117,39 @@ async def handle_webhook(request: Request):
                     await bot.send_message(chat_id, global_stats_msg, parse_mode="Markdown")
                     
             else:
-                amt, desc, date = await parse_expense_text(text)
-                
-                if amt <= 0:
-                    await bot.send_message(chat_id, "⚠️ I couldn't quite understand the amount. Could you try formatting it a bit differently? (e.g., 'Coffee 40')")
-                elif check_duplicate(uid, amt, desc):
-                    await bot.send_message(chat_id, "⚠️ **Duplicate prevented!** It looks like you just saved this exact transaction.")
-                elif date > datetime.now():
-                    kb = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("Yes", callback_data=f"yes_future:{amt}:{desc}:{date.isoformat()}"),
-                         InlineKeyboardButton("No", callback_data="no_future")]
-                    ])
-                    await bot.send_message(chat_id, f"⏳ **Future date detected!**\nYou entered {date.strftime('%d-%m-%Y')}.\nAre you sure?", reply_markup=kb, parse_mode="Markdown")
-                else:
-                    last_cat_id = get_last_category(desc)
-                    if last_cat_id:
-                        record = TransactionRecord(user_id=uid, amount=amt, category_id=last_cat_id, description=desc, transaction_date=date)
-                        # ✅ Check if save was actually successful
-                        if save_transaction(record):
-                            cats = get_all_categories()
-                            cat_name = next((c['category_name'] for c in cats if c['id'] == last_cat_id), "Other")
-                            await bot.send_message(chat_id, f"⚡ **Auto-Saved!**\n📝 {desc}\n💰 {amt}\n📁 {cat_name} 📅 {date.strftime('%d-%m-%Y')}", parse_mode="Markdown")
-                        else:
-                            await bot.send_message(chat_id, "⚠️ **I'm sorry, I encountered an issue saving your transaction.** Please try again later.", parse_mode="Markdown")
+                try:
+                    amt, desc, date = await parse_expense_text(text)
+                    
+                    if check_duplicate(uid, amt, desc):
+                        await bot.send_message(chat_id, "⚠️ **Duplicate prevented!** It looks like you just saved this exact transaction.")
+                    elif date > datetime.now():
+                        kb = InlineKeyboardMarkup([
+                            [InlineKeyboardButton("Yes", callback_data=f"yes_future:{amt}:{desc}:{date.isoformat()}"),
+                             InlineKeyboardButton("No", callback_data="no_future")]
+                        ])
+                        await bot.send_message(chat_id, f"⏳ **Future date detected!**\nYou entered {date.strftime('%d-%m-%Y')}.\nAre you sure?", reply_markup=kb, parse_mode="Markdown")
                     else:
-                        categories = get_all_categories()
-                        buttons = [[InlineKeyboardButton(c['category_name'], callback_data=f"cat:{c['id']}:{amt}:{desc}:{date.isoformat()}")] for c in categories]
-                        await bot.send_message(chat_id, f"🆕 **New item detected!**\n\n📝 **Item:** {desc}\n💰 **Amount:** {amt}\n\nPlease select a category:", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+                        last_cat_id = get_last_category(desc)
+                        if last_cat_id:
+                            record = TransactionRecord(user_id=uid, amount=amt, category_id=last_cat_id, description=desc, transaction_date=date)
+                            if save_transaction(record):
+                                cats = get_all_categories()
+                                cat_name = next((c['category_name'] for c in cats if c['id'] == last_cat_id), "Other")
+                                await bot.send_message(chat_id, f"⚡ **Auto-Saved!**\n📝 {desc}\n💰 {amt}\n📁 {cat_name} 📅 {date.strftime('%d-%m-%Y')}", parse_mode="Markdown")
+                            else:
+                                await bot.send_message(chat_id, "⚠️ **I'm sorry, I encountered an issue saving your transaction.** Please try again.", parse_mode="Markdown")
+                        else:
+                            categories = get_all_categories()
+                            buttons = [[InlineKeyboardButton(c['category_name'], callback_data=f"cat:{c['id']}:{amt}:{desc}:{date.isoformat()}")] for c in categories]
+                            await bot.send_message(chat_id, f"🆕 **New item detected!**\n\n📝 **Item:** {desc}\n💰 **Amount:** {amt}\n\nPlease select a category:", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+                            
+                except ValueError as ve:
+                    await bot.send_message(chat_id, f"⚠️ {str(ve)}")
 
         return {"status": "ok"}
         
     except Exception as e:
         logger.error(f"Global webhook exception: {str(e)}", exc_info=True)
-        # 🚀 Global Notification Fallback: If ANY code breaks, message the user politely.
         if chat_id:
             try:
                 await bot.send_message(
@@ -164,8 +157,6 @@ async def handle_webhook(request: Request):
                     text="🛠️ **Oops! I ran into a tiny technical hiccup on my end while processing that.** Could you please try again?",
                     parse_mode="Markdown"
                 )
-            except Exception as notify_error:
-                logger.error(f"Failed to send fallback error message: {str(notify_error)}")
-                
-        # Must return 200 OK so Telegram stops infinitely retrying the broken payload
+            except Exception:
+                pass
         return {"status": "ok"}
