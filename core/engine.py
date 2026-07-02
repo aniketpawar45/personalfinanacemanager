@@ -15,6 +15,22 @@ if not GROQ_API_KEY:
 
 client = AsyncGroq(api_key=GROQ_API_KEY)
 
+
+# 🚀 NEW: Voice-to-Text Transcription Engine
+async def transcribe_audio(audio_bytes: bytes) -> str:
+    try:
+        # Groq expects a file tuple: (filename, file_content, content_type)
+        file_tuple = ("voice_message.ogg", audio_bytes, "audio/ogg")
+        response = await client.audio.transcriptions.create(
+            file=file_tuple,
+            model="whisper-large-v3"
+        )
+        return response.text.strip()
+    except Exception as e:
+        logger.error(f"Voice transcription failed: {str(e)}")
+        raise ValueError("I had trouble understanding that audio. Could you try typing it out?")
+
+
 SYSTEM_PROMPT = """
 You are a highly precise financial extraction tool. 
 Extract the 'amount' (numeric float), 'item_name' (string), and 'date_str' (string, if mentioned).
@@ -26,7 +42,6 @@ Do NOT include any conversational text.
 
 
 async def parse_expense_text(text: str) -> tuple[float, str, datetime]:
-    # NLP Pre-Processing: Separate squished letters and numbers
     processed_text = re.sub(r'([a-zA-Z])(\d)', r'\1 \2', text)
     processed_text = re.sub(r'(\d)([a-zA-Z])', r'\1 \2', processed_text)
 
@@ -47,7 +62,6 @@ async def parse_expense_text(text: str) -> tuple[float, str, datetime]:
         amt = float(extraction.amount) if extraction.amount is not None else 0.0
         item = str(extraction.item_name).title().strip() if extraction.item_name else ""
 
-        # EXPLICIT VALIDATION: No silent failures
         if amt <= 0:
             raise ValueError(f"I couldn't find a valid price in '{text}'. Please include an amount (e.g., 'Milk 40').")
         if not item or item == str(amt) or item == "0.0":
