@@ -1,12 +1,14 @@
 import os
 import logging
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, Header, Depends
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from datetime import datetime
 
 from core.database import (
     save_transaction, get_all_categories, check_duplicate, 
-    get_user_stats, get_global_stats, get_last_category, get_user_role
+    get_user_stats, get_global_stats, get_last_category, get_user_role,
+    load_categories_into_cache
 )
 from core.engine import parse_expense_text
 from core.models import TransactionRecord
@@ -15,7 +17,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-app = FastAPI(title="Enterprise Personal Finance Manager")
+# 🚀 Enterprise Application Lifecycle Management
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Executes ONCE when the Vercel container boots up to prevent network latency
+    load_categories_into_cache()
+    yield
+
+app = FastAPI(title="Enterprise Personal Finance Manager", lifespan=lifespan)
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_SECRET_TOKEN = os.environ.get("TELEGRAM_SECRET_TOKEN")
@@ -26,6 +35,7 @@ if not TELEGRAM_BOT_TOKEN:
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
 def verify_telegram_token(x_telegram_bot_api_secret_token: str = Header(None)):
+    """Enterprise Webhook Security Perimeter"""
     if not TELEGRAM_SECRET_TOKEN:
         logger.warning("TELEGRAM_SECRET_TOKEN is not configured in environment.")
         return
