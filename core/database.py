@@ -41,14 +41,3 @@ def get_user_stats(user_id):
             msg += f"• {c}: ₹{a:,.2f}\n"
         return msg
     except: return "❌ Error fetching stats."
-
-# New functions for deletion/pagination
-def get_user_transactions(user_id, date=None, limit=5, offset=0):
-    query = supabase.table("transactions").select("id, amount, description, transaction_date").eq("user_id", str(user_id)).order("transaction_date", desc=True).limit(limit).range(offset, offset + limit - 1)
-    if date:
-        date_str = date.strftime('%Y-%m-%d')
-        query = query.ilike("transaction_date", f"{date_str}%")
-    return query.execute().data
-
-def delete_transaction(transaction_id):
-    return supabase.table("transactions").delete().eq("id", transaction_id).execute()
