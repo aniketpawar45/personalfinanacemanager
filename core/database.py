@@ -1,5 +1,6 @@
 import os
 import logging
+from functools import lru_cache
 from supabase import create_client, Client
 from datetime import datetime, timedelta
 from core.models import TransactionRecord
@@ -29,7 +30,9 @@ def get_user_role(telegram_id: str) -> str:
         return "unauthenticated"
 
 
+@lru_cache(maxsize=1)
 def get_all_categories() -> list:
+    """Fetches categories from Supabase and caches them in Vercel's memory to eliminate network latency."""
     try:
         response = supabase.table("categories").select("id, category_name").execute()
         return response.data
