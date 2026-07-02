@@ -109,6 +109,9 @@ async def handle_webhook(request: Request):
             cid = msg["chat"]["id"]
             text = msg["text"].strip()
 
+            # Enterprise UX: Immediately show "typing..." while AI and DB process
+            await bot.send_chat_action(chat_id=cid, action='typing')
+
             user_role = get_user_role(uid)
             is_admin = (user_role == "admin")
 
