@@ -1,99 +1,135 @@
-import sys
 import os
-import dateparser
 import logging
+from fastapi import FastAPI, Request, HTTPException, Header, Depends
+from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from datetime import datetime
 
-# Path Injection to ensure Vercel sees the /core directory
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
-
-from fastapi import FastAPI, Request
-from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from core.database import (
-    load_categories_into_cache,
-    get_all_categories,
-    get_report_data,
-    save_transaction
+    save_transaction, get_all_categories, check_duplicate, 
+    get_user_stats, get_global_stats, get_last_category, get_user_role
 )
-from core.engine import transcribe_audio, parse_expense_text
-from core.visuals import generate_neon_report_image
+from core.engine import parse_expense_text
 from core.models import TransactionRecord
 
 logging.basicConfig(level=logging.INFO)
-app = FastAPI()
-bot = Bot(token=os.environ.get("TELEGRAM_BOT_TOKEN"))
+logger = logging.getLogger(__name__)
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
+app = FastAPI(title="Enterprise Personal Finance Manager")
 
-@app.on_event("startup")
-async def startup():
-    load_categories_into_cache()
-    await bot.set_my_commands([
-        BotCommand("report", "Generate report"),
-        BotCommand("allstats", "View statistics")
-    ])
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+TELEGRAM_SECRET_TOKEN = os.environ.get("TELEGRAM_SECRET_TOKEN")
 
+if not TELEGRAM_BOT_TOKEN:
+    raise ValueError("Missing TELEGRAM_BOT_TOKEN environment variable.")
 
-@app.post("/api/webhook")
-async def webhook(req: Request):
+bot = Bot(token=TELEGRAM_BOT_TOKEN)
+
+def verify_telegram_token(x_telegram_bot_api_secret_token: str = Header(None)):
+    if not TELEGRAM_SECRET_TOKEN:
+        logger.warning("TELEGRAM_SECRET_TOKEN is not configured in environment.")
+        return
+    if x_telegram_bot_api_secret_token != TELEGRAM_SECRET_TOKEN:
+        logger.error("Unauthorized webhook invocation attempt blocked.")
+        raise HTTPException(status_code=401, detail="Unauthorized")
+
+@app.post("/api/webhook", dependencies=[Depends(verify_telegram_token)])
+async def handle_webhook(request: Request):
     try:
-        data = await req.json()
-        if "callback_query" in data:
-            q = data["callback_query"]
-            cid = q["message"]["chat"]["id"]
+        update = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload")
+
+    try:
+        if "callback_query" in update:
+            q = update["callback_query"]
+            chat_id = q["message"]["chat"]["id"]
+            message_id = q["message"]["message_id"]
             uid = str(q["from"]["id"])
-            # Data format: cat:cat_id:amt:desc
-            c_data = q["data"].split(":")
-            save_transaction(TransactionRecord(
-                user_id=uid,
-                amount=float(c_data[2]),
-                category_id=int(c_data[1]),
-                description=c_data[3],
-                transaction_date=datetime.now()
-            ))
-            await bot.answer_callback_query(q["id"], text="✅ Transaction Saved!")
-            await bot.edit_message_text(chat_id=cid, message_id=q["message"]["message_id"],
-                                        text=f"✅ Saved: {c_data[3]} (₹{c_data[2]})")
+            data = q["data"]
 
-        elif "message" in data:
-            msg = data["message"]
-            cid = msg["chat"]["id"]
-            uid = str(msg["from"]["id"])
-
-            # ROUTE: REPORT
-            if msg.get("text", "").startswith("/report"):
-                text = msg["text"]
-                is_img = "--image" in text
-                q = text.replace("/report", "").replace("--image", "").strip()
-                dt = dateparser.parse(q) or datetime.now()
-                start, end = (datetime(dt.year, 1, 1), datetime(dt.year, 12, 31)) if q.isdigit() else (
-                    dt.replace(hour=0, minute=0), dt.replace(hour=23, minute=59))
-
-                d = get_report_data(uid, start, end)
-                tot = sum(x['amount'] for x in d)
-
-                if not is_img:
-                    txt = f"🪩 *Report: {q or 'Today'}*\n🟣 *Total:* ₹{tot:,.2f}\n" + "".join(
-                        [f"🔹 {x['description']}: ₹{x['amount']}\n" for x in d])
-                    await bot.send_message(cid, txt, parse_mode="Markdown")
-                else:
-                    img = generate_neon_report_image(d, tot, f"REPORT: {q}")
-                    await bot.send_photo(cid, photo=img)
-
-            # ROUTE: TRANSACTION
-            else:
-                text = await transcribe_audio(msg.get("voice", {}).get("file_id"),
-                                              os.environ.get("TELEGRAM_BOT_TOKEN")) if "voice" in msg else msg.get(
-                    "text")
-                if text:
-                    amt, desc = await parse_expense_text(text)
+            if data.startswith("yes_future:"):
+                _, amt, desc, d_str = data.split(":", 3)
+                date = datetime.fromisoformat(d_str)
+                last_cat_id = get_last_category(desc)
+                
+                if last_cat_id:
+                    record = TransactionRecord(user_id=uid, amount=float(amt), category_id=last_cat_id, description=desc, transaction_date=date)
+                    save_transaction(record)
                     cats = get_all_categories()
-                    kb = InlineKeyboardMarkup(
-                        [[InlineKeyboardButton(c['category_name'], callback_data=f"cat:{c['id']}:{amt}:{desc}")] for c
-                         in cats])
-                    await bot.send_message(cid, f"📝 *{desc}* - ₹{amt}\nSelect Category:", reply_markup=kb,
-                                           parse_mode="Markdown")
+                    cat_name = next((c['category_name'] for c in cats if c['id'] == last_cat_id), "Other")
+                    await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"✅ **Saved Successfully!**\n📝 {desc}\n💰 {amt}\n📁 {cat_name} 📅 {date.strftime('%d-%m-%Y')}", parse_mode="Markdown")
+                else:
+                    categories = get_all_categories()
+                    buttons = [[InlineKeyboardButton(c['category_name'], callback_data=f"cat:{c['id']}:{amt}:{desc}:{date.isoformat()}")] for c in categories]
+                    await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"🆕 **New item detected!**\n\n📝 **Item:** {desc}\n💰 **Amount:** {amt}\n\nPlease select a category:", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+
+            elif data == "no_future":
+                await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="🚫 Entry cancelled.")
+
+            elif data.startswith("cat:"):
+                parts = data.split(":", 4)
+                cat_id, amt, desc, d_str = int(parts[1]), float(parts[2]), parts[3], parts[4]
+                date = datetime.fromisoformat(d_str)
+                
+                record = TransactionRecord(user_id=uid, amount=amt, category_id=cat_id, description=desc, transaction_date=date)
+                save_transaction(record)
+                
+                cats = get_all_categories()
+                cat_name = next((c['category_name'] for c in cats if c['id'] == cat_id), "Other")
+                await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"✅ **Saved Successfully!**\n📝 {desc}\n💰 {amt}\n📁 {cat_name} 📅 {date.strftime('%d-%m-%Y')}", parse_mode="Markdown")
+
+        elif "message" in update and "text" in update["message"]:
+            msg = update["message"]
+            uid = str(msg["from"]["id"])
+            cid = msg["chat"]["id"]
+            text = msg["text"].strip()
+            
+            user_role = get_user_role(uid)
+            is_admin = (user_role == "admin")
+
+            if text.startswith("/start"):
+                await bot.send_message(cid, "👋 Send expense (e.g., 'Coffee 40'). \nAdmins can use /allstats.")
+                
+            elif text.startswith("/stats"):
+                stats_msg = get_user_stats(uid)
+                await bot.send_message(cid, stats_msg, parse_mode="Markdown")
+                
+            elif text.startswith("/allstats"):
+                if not is_admin:
+                    await bot.send_message(cid, "⛔ **Access Denied:** You are not an authenticated admin.")
+                else:
+                    global_stats_msg = get_global_stats()
+                    await bot.send_message(cid, global_stats_msg, parse_mode="Markdown")
+                    
+            else:
+                amt, desc, date = await parse_expense_text(text)
+                
+                if amt <= 0:
+                    await bot.send_message(cid, "⚠️ Could not parse a valid amount.")
+                elif check_duplicate(uid, amt, desc):
+                    await bot.send_message(cid, "⚠️ Duplicate entry prevented.")
+                elif date > datetime.now():
+                    kb = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("Yes", callback_data=f"yes_future:{amt}:{desc}:{date.isoformat()}"),
+                         InlineKeyboardButton("No", callback_data="no_future")]
+                    ])
+                    await bot.send_message(cid, f"⏳ **Future date detected!**\nYou entered {date.strftime('%d-%m-%Y')}.\nAre you sure?", reply_markup=kb, parse_mode="Markdown")
+                else:
+                    last_cat_id = get_last_category(desc)
+                    if last_cat_id:
+                        record = TransactionRecord(user_id=uid, amount=amt, category_id=last_cat_id, description=desc, transaction_date=date)
+                        save_transaction(record)
+                        cats = get_all_categories()
+                        cat_name = next((c['category_name'] for c in cats if c['id'] == last_cat_id), "Other")
+                        await bot.send_message(cid, f"⚡ **Auto-Saved!**\n📝 {desc}\n💰 {amt}\n📁 {cat_name} 📅 {date.strftime('%d-%m-%Y')}", parse_mode="Markdown")
+                    else:
+                        categories = get_all_categories()
+                        buttons = [[InlineKeyboardButton(c['category_name'], callback_data=f"cat:{c['id']}:{amt}:{desc}:{date.isoformat()}")] for c in categories]
+                        await bot.send_message(cid, f"🆕 **New item detected!**\n\n📝 **Item:** {desc}\n💰 **Amount:** {amt}\n\nPlease select a category:", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
         return {"status": "ok"}
+        
     except Exception as e:
-        logging.error(f"Webhook Error: {e}", exc_info=True)
-        return {"status": "ok"}
+        logger.error(f"Error processing webhook: {str(e)}", exc_info=True)
+        return {"status": "error", "message": "Internal processing error"}

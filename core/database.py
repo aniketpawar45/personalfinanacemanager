@@ -1,72 +1,116 @@
 import os
 import logging
-from supabase import create_client
+from supabase import create_client, Client
+from datetime import datetime, timedelta
 from core.models import TransactionRecord
 
-supabase = create_client(os.environ.get("SUPABASE_URL"), os.environ.get("SUPABASE_SERVICE_ROLE_KEY"))
+logger = logging.getLogger(__name__)
 
-_CATEGORY_CACHE = []
+# Enforce secure environment variables
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY")
 
+if not SUPABASE_URL or not SUPABASE_ANON_KEY:
+    raise ValueError("Critical Security Error: Missing Supabase Anon Key or URL.")
 
-def load_categories_into_cache():
-    global _CATEGORY_CACHE
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
+
+def get_user_role(telegram_id: str) -> str:
+    """Enterprise RBAC: Identifies user privileges."""
     try:
-        res = supabase.table("categories").select("id, category_name").execute()
-        _CATEGORY_CACHE = res.data
+        response = supabase.table("app_users").select("role").eq("telegram_id", telegram_id).execute()
+        if response.data:
+            return response.data[0]['role']
+        return "unauthenticated"
     except Exception as e:
-        logging.error(f"Error loading categories: {e}")
-        _CATEGORY_CACHE = []
-
-
-def get_all_categories(): return _CATEGORY_CACHE
-
-
-def get_user_role(telegram_id: str):
-    try:
-        res = supabase.table("app_users").select("role").eq("telegram_id", telegram_id).execute()
-        return res.data[0]['role'] if res.data else "unauthenticated"
-    except Exception:
+        logger.error(f"Failed to fetch user role: {str(e)}")
         return "unauthenticated"
 
-
-def get_last_category(description: str):
-    """Fetches the last used category for a specific item to suggest it to the user."""
+def get_all_categories() -> list:
     try:
-        res = supabase.table("transactions").select("category_id") \
-            .eq("description", description.title()) \
-            .order("created_at", desc=True).limit(1).execute()
-        return res.data[0]['category_id'] if res.data else None
-    except Exception:
-        return None
-
-
-def save_transaction(rec: TransactionRecord):
-    data = {
-        "user_id": rec.user_id, "amount": rec.amount, "category_id": rec.category_id,
-        "description": rec.description.title(), "transaction_date": rec.transaction_date.isoformat()
-    }
-    return supabase.table("transactions").insert(data).execute()
-
-
-def get_report_data(uid, start, end):
-    try:
-        return supabase.table("transactions").select("description, amount, transaction_date") \
-            .eq("user_id", uid).gte("transaction_date", start.isoformat()) \
-            .lte("transaction_date", end.isoformat()).execute().data
-    except Exception:
+        response = supabase.table("categories").select("id, category_name").execute()
+        return response.data
+    except Exception as e:
+        logger.error(f"Failed to fetch categories: {str(e)}")
         return []
 
-
-def get_user_stats(user_id: str):
-    """Executes a database RPC call to get aggregated spend by category."""
+def get_last_category(description: str) -> int | None:
     try:
-        res = supabase.rpc("get_user_statistics", {"p_user_id": user_id}).execute()
-        if not res.data: return "📉 No spending data found."
-
-        total = sum(float(r['total_spent']) for r in res.data)
-        stats_str = f"📊 *Total Spent:* ₹{total:,.2f}\n"
-        stats_str += "".join([f"🔹 {r['category_name']}: ₹{float(r['total_spent']):,.2f}\n" for r in res.data])
-        return stats_str
+        response = supabase.table("transactions")\
+            .select("category_id")\
+            .eq("description", description.title())\
+            .order("created_at", desc=True)\
+            .limit(1)\
+            .execute()
+        return response.data[0]['category_id'] if response.data else None
     except Exception as e:
-        logging.error(f"Error fetching stats: {e}")
-        return "⚠️ Could not retrieve statistics."
+        logger.error(f"Failed to fetch last category: {str(e)}")
+        return None
+
+def check_duplicate(user_id: str, amount: float, description: str) -> bool:
+    try:
+        ten_seconds_ago = (datetime.now() - timedelta(seconds=10)).isoformat()
+        response = supabase.table("transactions")\
+            .select("id")\
+            .eq("user_id", user_id)\
+            .eq("amount", amount)\
+            .eq("description", description.title())\
+            .gt("created_at", ten_seconds_ago)\
+            .execute()
+        return len(response.data) > 0
+    except Exception as e:
+        logger.error(f"Duplicate check failed: {str(e)}")
+        return False
+
+def save_transaction(record: TransactionRecord) -> bool:
+    try:
+        data = {
+            "user_id": record.user_id,
+            "amount": record.amount,
+            "category_id": record.category_id,
+            "description": record.description.title(),
+            "transaction_date": record.transaction_date.isoformat()
+        }
+        # Sets the RLS context for the transaction
+        supabase.postgrest.auth(os.environ.get("SUPABASE_ANON_KEY"))
+        supabase.table("transactions").insert(data).execute()
+        return True
+    except Exception as e:
+        logger.error(f"Transaction save failed: {str(e)}")
+        return False
+
+def get_user_stats(user_id: str) -> str:
+    try:
+        response = supabase.rpc("get_user_statistics", {"p_user_id": user_id}).execute()
+        data = response.data
+        if not data:
+            return "📉 No personal expenses logged."
+            
+        total = sum(float(row['total_spent']) for row in data)
+        msg = f"📊 **Personal Total Spent: ₹{total:,.2f}**\n\n**Breakdown:**\n"
+        for row in data:
+            cat_name = row.get('category_name') or 'Other'
+            amt = float(row.get('total_spent', 0))
+            msg += f"🔹 {cat_name}: ₹{amt:,.2f}\n"
+        return msg
+    except Exception as e:
+        logger.error(f"Stats generation failed: {str(e)}")
+        return "⚠️ Error fetching personal stats."
+
+def get_global_stats() -> str:
+    try:
+        response = supabase.rpc("get_global_statistics").execute()
+        data = response.data
+        if not data:
+            return "📉 No expenses logged in the global ledger."
+            
+        total = sum(float(row['total_spent']) for row in data)
+        msg = f"🌍 **GLOBAL LEDGER Total: ₹{total:,.2f}**\n\n**Breakdown:**\n"
+        for row in data:
+            cat_name = row.get('category_name') or 'Other'
+            amt = float(row.get('total_spent', 0))
+            msg += f"🔹 {cat_name}: ₹{amt:,.2f}\n"
+        return msg
+    except Exception as e:
+        logger.error(f"Global stats generation failed: {str(e)}")
+        return "⚠️ Error fetching global stats."
