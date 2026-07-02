@@ -3,7 +3,6 @@ from typing import Optional
 from datetime import datetime
 
 class ExpenseExtraction(BaseModel):
-    # Allow the AI to return None, but default it to 0.0 so the app doesn't crash
     amount: Optional[float] = Field(default=0.0, description="The numeric amount of the expense. Return 0.0 if not found.")
     item_name: Optional[str] = Field(default="", description="The name of the item or service. Return empty string if not found.")
     date_str: Optional[str] = Field(default=None, description="The date mentioned, if any.")
