@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import dateparser
+import re
 from datetime import datetime
 from groq import AsyncGroq
 from core.models import ExpenseExtraction
@@ -22,11 +23,17 @@ Do NOT include any conversational text.
 """
 
 async def parse_expense_text(text: str) -> tuple[float, str, datetime]:
+    # 🚀 NLP Pre-Processing: Intelligently separate squished letters and numbers
+    # "milk6565" -> "milk 6565"
+    processed_text = re.sub(r'([a-zA-Z])(\d)', r'\1 \2', text)
+    # "150coffee" -> "150 coffee"
+    processed_text = re.sub(r'(\d)([a-zA-Z])', r'\1 \2', processed_text)
+    
     try:
         response = await client.chat.completions.create(
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": text}
+                {"role": "user", "content": processed_text}
             ],
             model="llama-3.1-8b-instant",
             response_format={"type": "json_object"},
@@ -38,7 +45,7 @@ async def parse_expense_text(text: str) -> tuple[float, str, datetime]:
         
         amt = float(extraction.amount)
         item = extraction.item_name.title()
-        date_str = extraction.date_str or text
+        date_str = extraction.date_str or processed_text
         
         parsed_date = dateparser.parse(
             date_str,
@@ -52,7 +59,11 @@ async def parse_expense_text(text: str) -> tuple[float, str, datetime]:
 
     except Exception as e:
         logger.warning(f"AI parsing failed, falling back to regex: {str(e)}")
-        import re
-        match = re.search(r'\d+(\.\d+)?', text)
+        # Hardened regex fallback using the pre-processed text
+        match = re.search(r'\d+(\.\d+)?', processed_text)
         amt = float(match.group()) if match else 0.0
-        return amt, text.title(), datetime.now()
+        
+        # Strip the numeric amount out of the text to leave just the clean item name
+        item_name = re.sub(r'\d+(\.\d+)?', '', processed_text).strip().title()
+        
+        return amt, item_name, datetime.now()
