@@ -30,7 +30,7 @@ async def parse_expense_text(text: str) -> tuple[float, str, datetime]:
             ],
             model="llama-3.1-8b-instant",
             response_format={"type": "json_object"},
-            temperature=0.0 # Deterministic output
+            temperature=0.0
         )
         
         raw_json = response.choices[0].message.content
