@@ -4,7 +4,10 @@ from fastapi import FastAPI, Request, HTTPException, Header, Depends
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
 from datetime import datetime
 
-from core.database import save_transaction, get_all_categories, check_duplicate, get_user_stats, get_last_category
+from core.database import (
+    save_transaction, get_all_categories, check_duplicate, 
+    get_user_stats, get_global_stats, get_last_category, get_user_role
+)
 from core.engine import parse_expense_text
 from core.models import TransactionRecord
 
@@ -12,7 +15,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
-app = FastAPI(title="Personal Finance Manager API")
+app = FastAPI(title="Enterprise Personal Finance Manager")
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_SECRET_TOKEN = os.environ.get("TELEGRAM_SECRET_TOKEN")
@@ -23,11 +26,9 @@ if not TELEGRAM_BOT_TOKEN:
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
 def verify_telegram_token(x_telegram_bot_api_secret_token: str = Header(None)):
-    """Enterprise Webhook Security: Validate incoming requests."""
     if not TELEGRAM_SECRET_TOKEN:
         logger.warning("TELEGRAM_SECRET_TOKEN is not configured in environment.")
         return
-        
     if x_telegram_bot_api_secret_token != TELEGRAM_SECRET_TOKEN:
         logger.error("Unauthorized webhook invocation attempt blocked.")
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -40,7 +41,6 @@ async def handle_webhook(request: Request):
         raise HTTPException(status_code=400, detail="Invalid JSON payload")
 
     try:
-        # CALLBACK QUERIES
         if "callback_query" in update:
             q = update["callback_query"]
             chat_id = q["message"]["chat"]["id"]
@@ -58,13 +58,11 @@ async def handle_webhook(request: Request):
                     save_transaction(record)
                     cats = get_all_categories()
                     cat_name = next((c['category_name'] for c in cats if c['id'] == last_cat_id), "Other")
-                    text = f"✅ **Saved Successfully!**\n📝 {desc}\n💰 {amt}\n📁 {cat_name} 📅 {date.strftime('%d-%m-%Y')}"
-                    await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, parse_mode="Markdown")
+                    await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"✅ **Saved Successfully!**\n📝 {desc}\n💰 {amt}\n📁 {cat_name} 📅 {date.strftime('%d-%m-%Y')}", parse_mode="Markdown")
                 else:
                     categories = get_all_categories()
                     buttons = [[InlineKeyboardButton(c['category_name'], callback_data=f"cat:{c['id']}:{amt}:{desc}:{date.isoformat()}")] for c in categories]
-                    text = f"🆕 **New item detected!**\n\n📝 **Item:** {desc}\n💰 **Amount:** {amt}\n\nPlease select a category:"
-                    await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+                    await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"🆕 **New item detected!**\n\n📝 **Item:** {desc}\n💰 **Amount:** {amt}\n\nPlease select a category:", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
             elif data == "no_future":
                 await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="🚫 Entry cancelled.")
@@ -79,21 +77,31 @@ async def handle_webhook(request: Request):
                 
                 cats = get_all_categories()
                 cat_name = next((c['category_name'] for c in cats if c['id'] == cat_id), "Other")
-                text = f"✅ **Saved Successfully!**\n📝 {desc}\n💰 {amt}\n📁 {cat_name} 📅 {date.strftime('%d-%m-%Y')}"
-                await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text, parse_mode="Markdown")
+                await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"✅ **Saved Successfully!**\n📝 {desc}\n💰 {amt}\n📁 {cat_name} 📅 {date.strftime('%d-%m-%Y')}", parse_mode="Markdown")
 
-        # STANDARD MESSAGES
         elif "message" in update and "text" in update["message"]:
             msg = update["message"]
             uid = str(msg["from"]["id"])
             cid = msg["chat"]["id"]
             text = msg["text"].strip()
+            
+            user_role = get_user_role(uid)
+            is_admin = (user_role == "admin")
 
             if text.startswith("/start"):
-                await bot.send_message(cid, "👋 Send expense (e.g., 'Coffee 40') or use /stats.")
+                await bot.send_message(cid, "👋 Send expense (e.g., 'Coffee 40'). \nAdmins can use /allstats.")
+                
             elif text.startswith("/stats"):
                 stats_msg = get_user_stats(uid)
                 await bot.send_message(cid, stats_msg, parse_mode="Markdown")
+                
+            elif text.startswith("/allstats"):
+                if not is_admin:
+                    await bot.send_message(cid, "⛔ **Access Denied:** You are not an authenticated admin.")
+                else:
+                    global_stats_msg = get_global_stats()
+                    await bot.send_message(cid, global_stats_msg, parse_mode="Markdown")
+                    
             else:
                 amt, desc, date = await parse_expense_text(text)
                 
@@ -114,17 +122,14 @@ async def handle_webhook(request: Request):
                         save_transaction(record)
                         cats = get_all_categories()
                         cat_name = next((c['category_name'] for c in cats if c['id'] == last_cat_id), "Other")
-                        text = f"⚡ **Auto-Saved!**\n📝 {desc}\n💰 {amt}\n📁 {cat_name} 📅 {date.strftime('%d-%m-%Y')}"
-                        await bot.send_message(cid, text, parse_mode="Markdown")
+                        await bot.send_message(cid, f"⚡ **Auto-Saved!**\n📝 {desc}\n💰 {amt}\n📁 {cat_name} 📅 {date.strftime('%d-%m-%Y')}", parse_mode="Markdown")
                     else:
                         categories = get_all_categories()
                         buttons = [[InlineKeyboardButton(c['category_name'], callback_data=f"cat:{c['id']}:{amt}:{desc}:{date.isoformat()}")] for c in categories]
-                        text = f"🆕 **New item detected!**\n\n📝 **Item:** {desc}\n💰 **Amount:** {amt}\n\nPlease select a category:"
-                        await bot.send_message(cid, text, reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
+                        await bot.send_message(cid, f"🆕 **New item detected!**\n\n📝 **Item:** {desc}\n💰 **Amount:** {amt}\n\nPlease select a category:", reply_markup=InlineKeyboardMarkup(buttons), parse_mode="Markdown")
 
         return {"status": "ok"}
         
     except Exception as e:
         logger.error(f"Error processing webhook: {str(e)}", exc_info=True)
-        # Ensure we return 200 so Telegram doesn't infinitely retry failing payloads
         return {"status": "error", "message": "Internal processing error"}
