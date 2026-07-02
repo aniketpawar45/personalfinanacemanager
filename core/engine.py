@@ -1,4 +1,4 @@
-import os, re, dateparser, logging
+import os, re, dateparser, logging, httpx
 from datetime import datetime
 from groq import AsyncGroq
 from core.models import ExpenseExtraction
@@ -7,7 +7,6 @@ client = AsyncGroq(api_key=os.environ.get("GROQ_API_KEY"))
 logger = logging.getLogger(__name__)
 
 async def transcribe_audio(file_id: str, bot_token: str) -> str:
-    import httpx
     async with httpx.AsyncClient() as http:
         file_info = (await http.get(f"https://api.telegram.org/bot{bot_token}/getFile?file_id={file_id}")).json()
         path = file_info["result"]["file_path"]

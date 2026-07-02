@@ -1,4 +1,7 @@
-import os, dateparser
+import sys, os, dateparser
+
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
 from fastapi import FastAPI, Request
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup, BotCommand
 from core.database import *
@@ -9,6 +12,12 @@ app = FastAPI()
 bot = Bot(token=os.environ.get("TELEGRAM_BOT_TOKEN"))
 
 
+@app.on_event("startup")
+async def startup():
+    load_categories_into_cache()
+    await bot.set_my_commands([BotCommand("report", "Report"), BotCommand("allstats", "Stats")])
+
+
 @app.post("/api/webhook")
 async def webhook(req: Request):
     data = await req.json()
@@ -16,19 +25,16 @@ async def webhook(req: Request):
         msg = data["message"]
         cid, uid = msg["chat"]["id"], str(msg["from"]["id"])
 
-        # 1. REPORT GENERATION ROUTE
+        # REPORT ROUTE
         if "text" in msg and msg["text"].startswith("/report"):
             cmd = msg["text"]
             is_img = "--image" in cmd
             q = cmd.replace("/report", "").replace("--image", "").strip()
-            # Date logic
             dt = dateparser.parse(q) or datetime.now()
             start, end = (datetime(dt.year, 1, 1), datetime(dt.year, 12, 31)) if q.isdigit() else (
                 dt.replace(hour=0, minute=0), dt.replace(hour=23, minute=59))
-
             rep_data = get_report_data(uid, start, end)
             total = sum(d['amount'] for d in rep_data)
-
             if not is_img:
                 await bot.send_message(cid, f"🪩 *Report {q or 'Today'}*\n🟣 *Total:* ₹{total:,.2f}\n" + "".join(
                     [f"🔹 {d['description']}: ₹{d['amount']}\n" for d in rep_data]), parse_mode="Markdown")
@@ -41,7 +47,7 @@ async def webhook(req: Request):
                                             parse_mode="Markdown")
                 await bot.send_photo(cid, photo=img)
 
-        # 2. TRANSACTION ROUTE (Text or Voice)
+        # TRANSACTION ROUTE
         else:
             text = await transcribe_audio(msg["voice"]["file_id"],
                                           os.environ.get("TELEGRAM_BOT_TOKEN")) if "voice" in msg else msg.get("text")
