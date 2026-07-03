@@ -2,7 +2,7 @@ import datetime
 import calendar
 import dateparser
 import re
-from core.database import get_scoped_client, supabase
+from core.database import get_scoped_client
 from core.utils import get_ist_now, IST_TZ
 
 
