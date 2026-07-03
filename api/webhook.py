@@ -32,9 +32,13 @@ if not TELEGRAM_BOT_TOKEN:
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
 def extract_remarks(q: dict) -> str:
-    """Extracts original text from the replied-to message for the remarks column."""
+    """Extracts original text or voice transcript from the replied-to message."""
     try:
-        return q["message"]["reply_to_message"]["text"]
+        raw_text = q["message"]["reply_to_message"]["text"]
+        # ENTERPRISE PATCH: Strip the bot's transcription prefix for clean database storage
+        if raw_text.startswith("🎙️ Heard: "):
+            return raw_text.replace("🎙️ Heard: ", "", 1).strip()
+        return raw_text.strip()
     except KeyError:
         return "Manual override save"
 
@@ -102,6 +106,7 @@ async def handle_webhook(request: Request):
         elif "message" in update:
             msg = update["message"]
             msg_id = msg["message_id"]
+            active_msg_id = msg_id  # Default anchor for text messages
             uid = str(msg["from"]["id"])
             chat_id = msg["chat"]["id"]
             is_admin = (get_user_role(uid) == "admin")
@@ -127,7 +132,10 @@ async def handle_webhook(request: Request):
                 
                 current_step = "Transcribing Voice via AI"
                 text = await transcribe_audio(audio_bytes)
-                await bot.send_message(chat_id, f"🎙️ *Heard:* {text}", parse_mode="Markdown", reply_to_message_id=msg_id)
+                
+                # ENTERPRISE PATCH: Store the sent message reference to anchor future callbacks
+                heard_msg = await bot.send_message(chat_id, f"🎙️ Heard: {text}", reply_to_message_id=msg_id)
+                active_msg_id = heard_msg.message_id
             
             else:
                 await bot.send_message(chat_id, "⚠️ I only understand text and voice messages.")
@@ -153,7 +161,7 @@ async def handle_webhook(request: Request):
                             [InlineKeyboardButton("Yes, save it", callback_data=f"confirm_unk:{amt}:{date.timestamp()}")],
                             [InlineKeyboardButton("No, cancel", callback_data="cancel_unk")]
                         ])
-                        await bot.send_message(chat_id, f"⚠️ I found the amount (₹{amt}) but couldn't identify the item.\n\nDo you want to save this anyway?", reply_markup=kb, reply_to_message_id=msg_id)
+                        await bot.send_message(chat_id, f"⚠️ I found the amount (₹{amt}) but couldn't identify the item.\n\nDo you want to save this anyway?", reply_markup=kb, reply_to_message_id=active_msg_id)
                     elif check_duplicate(uid, amt, desc):
                         await bot.send_message(chat_id, "⚠️ Duplicate prevented!")
                     elif date > get_ist_now():
@@ -161,7 +169,7 @@ async def handle_webhook(request: Request):
                             [InlineKeyboardButton("Yes", callback_data=f"yes_future:{amt}:{desc}:{date.isoformat()}"),
                              InlineKeyboardButton("No", callback_data="no_future")]
                         ])
-                        await bot.send_message(chat_id, f"Future date detected: {date.strftime('%d-%m-%Y')}. Are you sure?", reply_markup=kb, reply_to_message_id=msg_id)
+                        await bot.send_message(chat_id, f"Future date detected: {date.strftime('%d-%m-%Y')}. Are you sure?", reply_markup=kb, reply_to_message_id=active_msg_id)
                     else:
                         last_cat_id = get_last_category(desc)
                         if last_cat_id:
@@ -173,7 +181,7 @@ async def handle_webhook(request: Request):
                         else:
                             categories = get_all_categories()
                             buttons = [[InlineKeyboardButton(c['category_name'], callback_data=f"cat:{c['id']}:{amt}:{desc}:{date.timestamp()}")] for c in categories]
-                            await bot.send_message(chat_id, "Select a category:", reply_markup=InlineKeyboardMarkup(buttons), reply_to_message_id=msg_id)
+                            await bot.send_message(chat_id, "Select a category:", reply_markup=InlineKeyboardMarkup(buttons), reply_to_message_id=active_msg_id)
 
     except FinanceManagerException as fme:
         error_msg = f"❌ **System Failure at [{fme.step}]**\n⚠️ {fme.message}\n🔧 **Action:** {fme.action}"
