@@ -15,25 +15,25 @@ async def handle_chart_command(bot, chat_id, command, uid):
     labels = list(stats['categories'].keys())
     data = list(stats['categories'].values())
     
-    # PREMIUM HIGH-CONTRAST NEON PALETTE
-    # Each neon color is explicitly selected for maximum vibrancy against dark/light interfaces
-    neon_colors = [
-        "#00E5FF",  # Electric Cyan
-        "#FF007F",  # Neon Rose / Magenta
-        "#FFD700",  # Neon Gold / Yellow
-        "#39FF14",  # Neon Green
-        "#9D00FF",  # Neon Purple
-        "#FF5722"   # Neon Orange
+    # DARK-THEMED NEON PALETTE (STRICTLY NO PINK)
+    # Deep, highly saturated electric tones engineered for ultimate contrast
+    dark_neon_colors = [
+        "#00B0FF",  # Electric Cyan / Deep Blue
+        "#FFAB00",  # Saturated Amber / Gold
+        "#00E676",  # Neon Emerald Green
+        "#AA00FF",  # Deep Violet / Purple
+        "#FF3D00",  # Electric Dark Orange
+        "#00E5FF"   # Bright Turquoise
     ]
     
-    # Constructing QuickChart config with explicit font weights and custom label overrides
+    # Configuration optimizing internal text visibility using absolute white bold metrics
     chart_config = {
         "type": "pie",
         "data": {
             "labels": labels,
             "datasets": [{
                 "data": data,
-                "backgroundColor": neon_colors[:len(labels)],
+                "backgroundColor": dark_neon_colors[:len(labels)],
                 "borderColor": "#121212",
                 "borderWidth": 2
             }]
@@ -49,15 +49,16 @@ async def handle_chart_command(bot, chat_id, command, uid):
             "legend": {
                 "position": "bottom",
                 "labels": {
-                    "fontColor": "#E0E0E0",
+                    "fontColor": "#B0BEC5",  # High-contrast light gray text for legends
                     "fontSize": 12,
-                    "boxWidth": 12
+                    "boxWidth": 12,
+                    "fontStyle": "bold"
                 }
             },
             "plugins": {
                 "datalabels": {
                     "display": True,
-                    "color": "#000000",  # Dark text overlay for perfect readability on neon backgrounds
+                    "color": "#FFFFFF",  # CRITICAL: High-contrast white text over deep neon slices
                     "font": {
                         "weight": "bold",
                         "size": 13
@@ -71,11 +72,11 @@ async def handle_chart_command(bot, chat_id, command, uid):
     json_config = json.dumps(chart_config)
     encoded_config = urllib.parse.quote(json_config)
     
-    # We include a dark background canvas wrapper (&bkg=1e1e1e) to isolate and make neon colors pop
-    chart_url = f"https://quickchart.io/chart?c={encoded_config}&bkg=1E1E1E"
+    # Using an ultra-dark canvas block (&bkg=0A0A0A) to make deep neon tones pop intensely
+    chart_url = f"https://quickchart.io/chart?c={encoded_config}&bkg=0A0A0A"
     
     await bot.send_photo(
         chat_id, 
         photo=chart_url, 
-        caption=f"📊 *Visual Report: {label}*\n💰 *Total Metric: ₹{stats['total']:,.2f}*"
+        caption=f"📊 **Visual Report: {label}**\n💰 **Total Metric: ₹{stats['total']:,.2f}**"
     )
