@@ -30,7 +30,7 @@ async def transcribe_audio(audio_bytes: bytes) -> str:
             action="USER ACTION REQUIRED: Please try typing out your expense instead."
         )
 
-SYSTEM_PROMPT = """You are a highly precise financial extraction tool. Extract 'amount', 'item_name', and 'date_str' into strict JSON. If no valid amount, return 0.0. If no valid item, return empty string."""
+SYSTEM_PROMPT = """You are a highly precise financial extraction tool. Extract 'amount' (number), 'item_name' (string), and 'date_str' (string) into strict JSON. The amount is the cost or price mentioned. If no valid amount, return 0.0. If no valid item, return empty string."""
 
 async def parse_expense_text(text: str) -> tuple[float, str, datetime]:
     processed_text = re.sub(r'([a-zA-Z])(\d)', r'\1 \2', text)
@@ -53,14 +53,21 @@ async def parse_expense_text(text: str) -> tuple[float, str, datetime]:
         amt = float(extraction.amount) if extraction.amount is not None else 0.0
         item = str(extraction.item_name).title().strip() if extraction.item_name else ""
         
+        # ENTERPRISE HOTFIX: Hybrid Regex Fallback for missing amounts
         if amt <= 0:
-            raise FinanceManagerException(step="AI Extraction Node", message="No valid price found.", action="Include an amount (e.g., 'Milk 40').")
+            match = re.search(r'\d+(\.\d+)?', processed_text)
+            if match:
+                amt = float(match.group())
+            else:
+                raise FinanceManagerException(step="AI Extraction Node", message="No valid price found.", action="Include an amount (e.g., 'Milk 40').")
+        
+        # Hybrid Regex Fallback for missing or conflated item names
         if not item or item == str(amt) or item == "0.0":
-            item = "Unknown Item"  # Replaced strict rejection with fallback state
+            fallback_item = re.sub(r'\d+(\.\d+)?', '', processed_text).strip().title()
+            item = fallback_item if fallback_item else "Unknown Item"
             
         date_str = extraction.date_str or processed_text
         
-        # ENTERPRISE HOTFIX: Forcing Offset-Aware Datetimes Natively
         parsed_date = dateparser.parse(
             date_str,
             settings={
@@ -71,15 +78,12 @@ async def parse_expense_text(text: str) -> tuple[float, str, datetime]:
             }
         )
         
-        # Fallback if parsing fails
         if not parsed_date:
             parsed_date = get_ist_now()
             
-        # Failsafe: If dateparser still returns a naive datetime, localize it explicitly
         if parsed_date.tzinfo is None:
             parsed_date = IST_TZ.localize(parsed_date)
         
-        # Keep the year within current bounds
         current_year = get_ist_now().year
         if parsed_date.year != current_year:
             parsed_date = parsed_date.replace(year=current_year)
