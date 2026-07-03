@@ -19,18 +19,40 @@ if not SUPABASE_URL or not SUPABASE_KEY:
 _base_supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 _CATEGORY_CACHE = []
 
+
 def get_scoped_client(telegram_id: str) -> Client:
     """
-    Architectural Fix: Returns a Supabase client instance scoped to the
-    active user session by injecting custom session headers that enforce PostgreSQL RLS.
+    Architectural Fix: Returns a standard connection client instance.
+    Session tenancy scoping is handled directly within the data operations.
     """
-    client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    return create_client(SUPABASE_URL, SUPABASE_KEY)
 
-    # CRITICAL FIX: Direct header injection without calling non-existent auth methods
-    client.postgrest.headers.update({
-        "X-Telegram-User-Id": str(telegram_id)
-    })
-    return client
+
+def save_transaction(record: TransactionRecord) -> bool:
+    try:
+        client = get_scoped_client(record.user_id)
+        client.rpc("set_config", {
+            "setting_name": "app.telegram_user_id",
+            "setting_value": str(record.user_id),
+            "is_local": True
+        }).execute()
+
+        data = {
+            "user_id": record.user_id,
+            "amount": record.amount,
+            "category_id": record.category_id,
+            "description": record.description.title(),
+            "transaction_date": record.transaction_date.isoformat(),
+            "remarks": record.remarks
+        }
+        client.table("transactions").insert(data).execute()
+        return True
+    except Exception as e:
+        raise FinanceManagerException(
+            step="Database Insertion Node",
+            message=f"Failed to commit transaction: {str(e)}",
+            action="SUPPORT TEAM ACTION REQUIRED: Verify Supabase schema structures and RLS configurations."
+        )
 
 def load_categories_into_cache():
     global _CATEGORY_CACHE
