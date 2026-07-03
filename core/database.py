@@ -100,3 +100,34 @@ def get_user_stats(user_id: str) -> str:
         return msg
     except Exception as e:
         raise FinanceManagerException(step="Database Fetch Node", message=str(e), action="Retry later.")
+
+def get_deletable_entries(user_id: str, start_dt, end_dt, limit: int = 5) -> list:
+    """Fetches the latest ledger entries within a given timeframe for selective deletion."""
+    try:
+        query = supabase.table("transactions")\
+            .select("id, amount, description, transaction_date")\
+            .eq("user_id", str(user_id))\
+            .gte("transaction_date", start_dt.isoformat())\
+            .lte("transaction_date", end_dt.isoformat())\
+            .order("transaction_date", desc=True)\
+            .limit(limit)
+        response = query.execute()
+        return response.data if response.data else []
+    except Exception as e:
+        logger.error(f"Database Deletion Query Failure: {str(e)}")
+        return []
+
+def delete_transaction_batch(user_id: str, transaction_ids: list[int]) -> bool:
+    """Executes a hard deletion of targeted transaction records belonging to the user."""
+    try:
+        if not transaction_ids:
+            return False
+        supabase.table("transactions")\
+            .delete()\
+            .eq("user_id", str(user_id))\
+            .in_("id", transaction_ids)\
+            .execute()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to execute ledger deletion batch: {str(e)}")
+        return False

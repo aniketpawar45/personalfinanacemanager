@@ -2,22 +2,25 @@ import os
 import gc
 import logging
 import httpx
+import datetime
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request
 from telegram import Bot, InlineKeyboardButton, InlineKeyboardMarkup
-from datetime import datetime
 
 from core.database import (
     save_transaction, get_all_categories, check_duplicate,
     get_user_stats, get_last_category, get_user_role,
-    load_categories_into_cache, supabase
+    load_categories_into_cache, supabase, get_deletable_entries, delete_transaction_batch
 )
 from core.engine import parse_expense_text, transcribe_audio
 from core.models import TransactionRecord
 from core.utils import get_ist_now, FinanceManagerException, IST_TZ
+from core.analytics import parse_date_range
+
 from api.reports import handle_report_command, handle_csv_export
 from api.stats import handle_statistics_command
 from api.chart import handle_chart_command
+from api.delete_manager import handle_delete_command, build_deletion_keyboard
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -39,10 +42,7 @@ bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
 
 async def verify_user_authorization(bot_client: Bot, chat_id: int, telegram_id: str) -> bool:
-    """
-    Enforces high-quality zero-trust entry security.
-    Instantly rejects requests if the telegram user is unauthorized or blocked.
-    """
+    """Enforces high-quality zero-trust entry security."""
     role = get_user_role(telegram_id)
     if role in ["admin", "user"]:
         return True
@@ -88,7 +88,6 @@ async def handle_webhook(request: Request):
             uid = str(q["from"]["id"])
             data = q["data"]
 
-            # Authorization Check
             if not await verify_user_authorization(bot, chat_id, uid):
                 await bot.answer_callback_query(q["id"], "Unauthorized Account Configuration.")
                 return {"status": "unauthorized"}
@@ -97,9 +96,71 @@ async def handle_webhook(request: Request):
                 _, start_ts, end_ts = data.split(":")
                 await handle_csv_export(bot, chat_id, uid, float(start_ts), float(end_ts))
                 await bot.answer_callback_query(q["id"], "Generating CSV...")
+
+            # --- INTERACTIVE DELETION CORE SWITCHES ---
+            elif data.startswith("del_tgl:"):
+                _, t_id, csv_ids, query_str = data.split(":", 3)
+                current_selected = [int(i) for i in csv_ids.split(",") if i != "none"]
+                t_id = int(t_id)
+
+                if t_id in current_selected:
+                    current_selected.remove(t_id)
+                else:
+                    current_selected.append(t_id)
+
+                start, end, _ = parse_date_range(query_str) if query_str != "rolling_90" else (
+                    get_ist_now() - datetime.timedelta(days=90), get_ist_now(), "")
+                entries = get_deletable_entries(uid, start, end, limit=5)
+
+                # Verified PTB v20+ property call ⚡
+                await bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id,
+                                                    reply_markup=build_deletion_keyboard(entries, current_selected,
+                                                                                         query_str))
+                await bot.answer_callback_query(q["id"])
+
+            elif data.startswith("del_all:"):
+                _, csv_all, query_str = data.split(":", 2)
+                all_ids = [int(i) for i in csv_all.split(",") if i]
+                start, end, _ = parse_date_range(query_str) if query_str != "rolling_90" else (
+                    get_ist_now() - datetime.timedelta(days=90), get_ist_now(), "")
+                entries = get_deletable_entries(uid, start, end, limit=5)
+
+                # Verified PTB v20+ property call ⚡
+                await bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id,
+                                                    reply_markup=build_deletion_keyboard(entries, all_ids, query_str))
+                await bot.answer_callback_query(q["id"])
+
+            elif data.startswith("del_clr:"):
+                _, query_str = data.split(":", 1)
+                start, end, _ = parse_date_range(query_str) if query_str != "rolling_90" else (
+                    get_ist_now() - datetime.timedelta(days=90), get_ist_now(), "")
+                entries = get_deletable_entries(uid, start, end, limit=5)
+
+                # Verified PTB v20+ property call ⚡
+                await bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id,
+                                                    reply_markup=build_deletion_keyboard(entries, [], query_str))
+                await bot.answer_callback_query(q["id"])
+
+            elif data.startswith("del_cmt:"):
+                _, csv_selected = data.split(":", 1)
+                target_ids = [int(i) for i in csv_selected.split(",") if i]
+
+                if delete_transaction_batch(uid, target_ids):
+                    await bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=message_id,
+                        text=f"💥 **Ledger Cleaned Successfully**\n━━━━━━━━━━━━━━━━━━━━━━\nSuccessfully removed `{len(target_ids)}` financial record links permanently.",
+                        parse_mode="Markdown"
+                    )
+                else:
+                    await bot.edit_message_text(chat_id=chat_id, message_id=message_id,
+                                                text="❌ Deletion failure. Session expired or items already missing.")
+                await bot.answer_callback_query(q["id"], "Records Purged.")
+
+            # --- ORIGINAL TRANS-SAVE BUTTON HANDLERS ---
             elif data.startswith("confirm_unk:"):
                 _, amt, d_ts = data.split(":")
-                date = datetime.fromtimestamp(float(d_ts), tz=IST_TZ)
+                date = datetime.datetime.fromtimestamp(float(d_ts), tz=IST_TZ)
                 categories = get_all_categories()
                 buttons = [[InlineKeyboardButton(c['category_name'],
                                                  callback_data=f"cat:{c['id']}:{amt}:Unk:{date.timestamp()}")] for c in
@@ -112,7 +173,7 @@ async def handle_webhook(request: Request):
                                             text="❌ Entry cancelled. Please resend with the item name.")
             elif data.startswith("yes_future:"):
                 _, amt, desc, d_str = data.split(":", 3)
-                date = datetime.fromisoformat(d_str)
+                date = datetime.datetime.fromisoformat(d_str)
                 remarks = extract_remarks(q)
                 last_cat_id = get_last_category(desc)
                 if last_cat_id:
@@ -136,7 +197,7 @@ async def handle_webhook(request: Request):
             elif data.startswith("cat:"):
                 parts = data.split(":", 4)
                 cat_id, amt, desc, d_ts = int(parts[1]), float(parts[2]), parts[3], float(parts[4])
-                date = datetime.fromtimestamp(d_ts, tz=IST_TZ)
+                date = datetime.datetime.fromtimestamp(d_ts, tz=IST_TZ)
                 remarks = extract_remarks(q)
                 record = TransactionRecord(user_id=uid, amount=amt, category_id=cat_id, description=desc,
                                            transaction_date=date, remarks=remarks)
@@ -155,7 +216,6 @@ async def handle_webhook(request: Request):
             uid = str(msg["from"]["id"])
             chat_id = msg["chat"]["id"]
 
-            # Authorization Check
             if not await verify_user_authorization(bot, chat_id, uid):
                 return {"status": "unauthorized"}
 
@@ -193,9 +253,10 @@ async def handle_webhook(request: Request):
                                            "Welcome! Send expenses (e.g., 'Coffee 40, Bread 30') or a Voice Note.")
                 elif text.startswith("/stats"):
                     await bot.send_message(chat_id, get_user_stats(uid), parse_mode="Markdown")
+                elif text.startswith("/delete"):
+                    await handle_delete_command(bot, chat_id, text, uid)
                 elif text.startswith("/subscribe"):
                     try:
-                        # 🛡️ RESTRICT TO ADMINS ONLY
                         user_role = get_user_role(uid)
                         if user_role != "admin":
                             logger.warning(f"🔒 Unauthorized /subscribe invocation blocked from UID: {uid}")
@@ -203,7 +264,7 @@ async def handle_webhook(request: Request):
                                 chat_id=chat_id,
                                 text="🚫 **Access Denied**: Only system administrators can configure global automated report distribution schedules."
                             )
-                            return {"status": "ok"}  # Cleanly exits the webhook handler
+                            return {"status": "ok"}
 
                         parts = text.split(maxsplit=2)
                         if len(parts) < 3:
@@ -233,7 +294,6 @@ async def handle_webhook(request: Request):
                 elif text.startswith("/"):
                     await bot.send_message(chat_id, "⚠️ Unknown command.")
                 else:
-                    # AI Processing Pipelines
                     categories = get_all_categories()
                     valid_cat_names = [c['category_name'] for c in categories]
                     extracted_items = await parse_expense_text(text, valid_cat_names)
