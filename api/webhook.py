@@ -167,8 +167,14 @@ async def handle_webhook(request: Request):
                             "emails": emails,
                             "scheduled_hour": 9 # Default IST 09:00 AM
                         }
-                        supabase.table("report_schedules").insert(sched_data).execute()
-                        await bot.send_message(chat_id, f"✅ Subscribed successfully!\n📅 Frequency: {freq.capitalize()}\n📧 To: {emails}\n⏰ Time: 09:00 AM IST")
+                        # DEBUG: Detailed subscription error reporting
+                        try:
+                            supabase.table("report_schedules").insert(sched_data).execute()
+                            await bot.send_message(chat_id, f"✅ Subscribed successfully!\n📅 Frequency: {freq.capitalize()}\n📧 To: {emails}\n⏰ Time: 09:00 AM IST")
+                        except Exception as db_err:
+                            error_msg = f"❌ Database Insert Failed: {str(db_err)}"
+                            logger.error(error_msg)
+                            await bot.send_message(chat_id, error_msg)
                     except ValueError as ve:
                         await bot.send_message(chat_id, f"⚠️ {str(ve)}")
                     except Exception as e:
