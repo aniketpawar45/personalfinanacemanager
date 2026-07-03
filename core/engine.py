@@ -30,16 +30,23 @@ async def transcribe_audio(audio_bytes: bytes) -> str:
             action="USER ACTION REQUIRED: Please try typing out your expense instead."
         )
 
-SYSTEM_PROMPT = """You are a highly precise financial extraction tool. Extract a list of expenses from the input. Return strict JSON with a single key 'items' containing an array of objects. Each object must have 'amount' (number), 'item_name' (string), and 'date_str' (string). If no valid amount is found for an item, return 0.0 for that item. If no valid item name, return an empty string."""
-
-async def parse_expense_text(text: str) -> list[tuple[float, str, datetime]]:
+async def parse_expense_text(text: str, valid_categories: list) -> list[tuple[float, str, datetime, str]]:
     processed_text = re.sub(r'([a-zA-Z])(\d)', r'\1 \2', text)
     processed_text = re.sub(r'(\d)([a-zA-Z])', r'\1 \2', processed_text)
+    
+    cat_list_str = ", ".join(valid_categories)
+    
+    # ENTERPRISE PROMPT: Injecting Dynamic Database Context
+    system_prompt = f"""You are a highly precise financial extraction tool. Extract a list of expenses from the input. 
+Return strict JSON with a single key 'items' containing an array of objects. 
+Each object must have 'amount' (number), 'item_name' (string), and 'date_str' (string).
+You MUST also include a 'category_name' (string). Choose the MOST LOGICAL category EXACTLY as it appears in this list: [{cat_list_str}]. 
+If you are NOT highly confident, return an empty string for category_name. If no valid amount, return 0.0."""
     
     try:
         response = await client.chat.completions.create(
             messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
+                {"role": "system", "content": system_prompt},
                 {"role": "user", "content": processed_text}
             ],
             model="llama-3.1-8b-instant",
@@ -54,8 +61,8 @@ async def parse_expense_text(text: str) -> list[tuple[float, str, datetime]]:
         for extraction in batch.items:
             amt = float(extraction.amount) if extraction.amount is not None else 0.0
             item = str(extraction.item_name).title().strip() if extraction.item_name else ""
+            ai_category = str(extraction.category_name).strip() if extraction.category_name else ""
             
-            # Hybrid Regex Fallback (scoped per item)
             if amt <= 0:
                 match = re.search(r'\d+(\.\d+)?', item)
                 if match:
@@ -87,7 +94,7 @@ async def parse_expense_text(text: str) -> list[tuple[float, str, datetime]]:
             if parsed_date.year != current_year:
                 parsed_date = parsed_date.replace(year=current_year)
                 
-            results.append((amt, item, parsed_date))
+            results.append((amt, item, parsed_date, ai_category))
             
         if not results:
             raise FinanceManagerException(step="AI Extraction Node", message="No expenses identified in the text.", action="Ensure your message contains items and prices.")

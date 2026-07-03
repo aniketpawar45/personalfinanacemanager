@@ -151,9 +151,11 @@ async def handle_webhook(request: Request):
                         await bot.send_message(chat_id, get_global_stats(), parse_mode="Markdown")
                 else:
                     # ENTERPRISE BATCH PROCESSING LOOP
-                    extracted_items = await parse_expense_text(text)
+                    categories = get_all_categories()
+                    valid_cat_names = [c['category_name'] for c in categories]
+                    extracted_items = await parse_expense_text(text, valid_cat_names)
                     
-                    for amt, desc, date in extracted_items:
+                    for amt, desc, date, ai_category in extracted_items:
                         try:
                             # Isolate state and validation per item
                             if amt <= 0:
@@ -177,18 +179,32 @@ async def handle_webhook(request: Request):
                                 await bot.send_message(chat_id, f"Future date detected for '{desc}': {date.strftime('%d-%m-%Y')}. Are you sure?", reply_markup=kb, reply_to_message_id=active_msg_id)
                                 
                             else:
+                                cat_id_to_use = None
+                                cat_name_to_display = "Other"
+                                
+                                # 1. Priority: Historical User Preference
                                 last_cat_id = get_last_category(desc)
                                 if last_cat_id:
-                                    record = TransactionRecord(user_id=uid, amount=amt, category_id=last_cat_id, description=desc, transaction_date=date, remarks=text)
+                                    cat_id_to_use = last_cat_id
+                                    cat_name_to_display = next((c['category_name'] for c in categories if c['id'] == last_cat_id), "Other")
+                                
+                                # 2. Priority: AI Autonomous Classification
+                                elif ai_category:
+                                    for c in categories:
+                                        if c['category_name'].lower() == ai_category.lower():
+                                            cat_id_to_use = c['id']
+                                            cat_name_to_display = c['category_name']
+                                            break
+                                            
+                                # Execution Routing
+                                if cat_id_to_use:
+                                    record = TransactionRecord(user_id=uid, amount=amt, category_id=cat_id_to_use, description=desc, transaction_date=date, remarks=text)
                                     save_transaction(record)
-                                    cats = get_all_categories()
-                                    cat_name = next((c['category_name'] for c in cats if c['id'] == last_cat_id), "Other")
-                                    await bot.send_message(chat_id, f"✅ Auto-Saved: {desc} - ₹{amt} ({cat_name})", reply_to_message_id=active_msg_id)
+                                    await bot.send_message(chat_id, f"✅ Auto-Saved: {desc} - ₹{amt} ({cat_name_to_display})", reply_to_message_id=active_msg_id)
                                 else:
-                                    categories = get_all_categories()
-                                    # Truncate description in callback payload to prevent 64-byte overflow
+                                    # 3. Fallback: Manual User Selection
                                     buttons = [[InlineKeyboardButton(c['category_name'], callback_data=f"cat:{c['id']}:{amt}:{desc[:10]}:{date.timestamp()}")] for c in categories]
-                                    await bot.send_message(chat_id, f"Select a category for '{desc}' (₹{amt}):", reply_markup=InlineKeyboardMarkup(buttons), reply_to_message_id=active_msg_id)
+                                    await bot.send_message(chat_id, f"🤖 Unsure of category.\nSelect a category for '{desc}' (₹{amt}):", reply_markup=InlineKeyboardMarkup(buttons), reply_to_message_id=active_msg_id)
                                     
                         except FinanceManagerException as fme:
                             # Discrete error logging for the isolated failed item
