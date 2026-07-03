@@ -32,10 +32,8 @@ if not TELEGRAM_BOT_TOKEN:
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 
 def extract_remarks(q: dict) -> str:
-    """Extracts original text or voice transcript from the replied-to message."""
     try:
         raw_text = q["message"]["reply_to_message"]["text"]
-        # ENTERPRISE PATCH: Strip the bot's transcription prefix for clean database storage
         if raw_text.startswith("🎙️ Heard: "):
             return raw_text.replace("🎙️ Heard: ", "", 1).strip()
         return raw_text.strip()
@@ -63,9 +61,8 @@ async def handle_webhook(request: Request):
             if data.startswith("confirm_unk:"):
                 _, amt, d_ts = data.split(":")
                 date = datetime.fromtimestamp(float(d_ts), tz=IST_TZ)
-                
                 categories = get_all_categories()
-                buttons = [[InlineKeyboardButton(c['category_name'], callback_data=f"cat:{c['id']}:{amt}:Unknown Item:{date.timestamp()}")] for c in categories]
+                buttons = [[InlineKeyboardButton(c['category_name'], callback_data=f"cat:{c['id']}:{amt}:Unk:{date.timestamp()}")] for c in categories]
                 await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="Select a category for this unknown item:", reply_markup=InlineKeyboardMarkup(buttons))
             
             elif data == "cancel_unk":
@@ -85,8 +82,8 @@ async def handle_webhook(request: Request):
                     await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"✅ Saved: {desc} - {amt} ({cat_name})")
                 else:
                     categories = get_all_categories()
-                    buttons = [[InlineKeyboardButton(c['category_name'], callback_data=f"cat:{c['id']}:{amt}:{desc}:{date.timestamp()}")] for c in categories]
-                    await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="Select a category:", reply_markup=InlineKeyboardMarkup(buttons))
+                    buttons = [[InlineKeyboardButton(c['category_name'], callback_data=f"cat:{c['id']}:{amt}:{desc[:10]}:{date.timestamp()}")] for c in categories]
+                    await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"Select a category for {desc}:", reply_markup=InlineKeyboardMarkup(buttons))
             
             elif data == "no_future":
                 await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="❌ Entry cancelled.")
@@ -101,12 +98,12 @@ async def handle_webhook(request: Request):
                 save_transaction(record)
                 cats = get_all_categories()
                 cat_name = next((c['category_name'] for c in cats if c['id'] == cat_id), "Other")
-                await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"✅ Saved: {desc} - {amt} ({cat_name})\n📝 *Remarks:* {remarks}", parse_mode="Markdown")
+                await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=f"✅ Saved: {desc} - {amt} ({cat_name})\n📝 *Remarks:* {remarks[:50]}...", parse_mode="Markdown")
 
         elif "message" in update:
             msg = update["message"]
             msg_id = msg["message_id"]
-            active_msg_id = msg_id  # Default anchor for text messages
+            active_msg_id = msg_id
             uid = str(msg["from"]["id"])
             chat_id = msg["chat"]["id"]
             is_admin = (get_user_role(uid) == "admin")
@@ -132,8 +129,6 @@ async def handle_webhook(request: Request):
                 
                 current_step = "Transcribing Voice via AI"
                 text = await transcribe_audio(audio_bytes)
-                
-                # ENTERPRISE PATCH: Store the sent message reference to anchor future callbacks
                 heard_msg = await bot.send_message(chat_id, f"🎙️ Heard: {text}", reply_to_message_id=msg_id)
                 active_msg_id = heard_msg.message_id
             
@@ -144,8 +139,9 @@ async def handle_webhook(request: Request):
             if text:
                 current_step = "Executing Command/Extraction"
                 await bot.send_chat_action(chat_id=chat_id, action='typing')
+                
                 if text.startswith("/start"):
-                    await bot.send_message(chat_id, "Send an expense (e.g., 'Coffee 40') or a Voice Note!")
+                    await bot.send_message(chat_id, "Send expenses (e.g., 'Coffee 40, Bread 30') or a Voice Note!")
                 elif text.startswith("/stats"):
                     await bot.send_message(chat_id, get_user_stats(uid), parse_mode="Markdown")
                 elif text.startswith("/allstats"):
@@ -154,36 +150,53 @@ async def handle_webhook(request: Request):
                     else:
                         await bot.send_message(chat_id, get_global_stats(), parse_mode="Markdown")
                 else:
-                    amt, desc, date = await parse_expense_text(text)
+                    # ENTERPRISE BATCH PROCESSING LOOP
+                    extracted_items = await parse_expense_text(text)
                     
-                    if desc == "Unknown Item":
-                        kb = InlineKeyboardMarkup([
-                            [InlineKeyboardButton("Yes, save it", callback_data=f"confirm_unk:{amt}:{date.timestamp()}")],
-                            [InlineKeyboardButton("No, cancel", callback_data="cancel_unk")]
-                        ])
-                        await bot.send_message(chat_id, f"⚠️ I found the amount (₹{amt}) but couldn't identify the item.\n\nDo you want to save this anyway?", reply_markup=kb, reply_to_message_id=active_msg_id)
-                    elif check_duplicate(uid, amt, desc):
-                        await bot.send_message(chat_id, "⚠️ Duplicate prevented!")
-                    elif date > get_ist_now():
-                        kb = InlineKeyboardMarkup([
-                            [InlineKeyboardButton("Yes", callback_data=f"yes_future:{amt}:{desc}:{date.isoformat()}"),
-                             InlineKeyboardButton("No", callback_data="no_future")]
-                        ])
-                        await bot.send_message(chat_id, f"Future date detected: {date.strftime('%d-%m-%Y')}. Are you sure?", reply_markup=kb, reply_to_message_id=active_msg_id)
-                    else:
-                        last_cat_id = get_last_category(desc)
-                        if last_cat_id:
-                            record = TransactionRecord(user_id=uid, amount=amt, category_id=last_cat_id, description=desc, transaction_date=date, remarks=text)
-                            save_transaction(record)
-                            cats = get_all_categories()
-                            cat_name = next((c['category_name'] for c in cats if c['id'] == last_cat_id), "Other")
-                            await bot.send_message(chat_id, f"✅ Auto-Saved: {desc} - {amt} ({cat_name})\n📝 *Remarks:* {text}", parse_mode="Markdown")
-                        else:
-                            categories = get_all_categories()
-                            buttons = [[InlineKeyboardButton(c['category_name'], callback_data=f"cat:{c['id']}:{amt}:{desc}:{date.timestamp()}")] for c in categories]
-                            await bot.send_message(chat_id, "Select a category:", reply_markup=InlineKeyboardMarkup(buttons), reply_to_message_id=active_msg_id)
+                    for amt, desc, date in extracted_items:
+                        try:
+                            # Isolate state and validation per item
+                            if amt <= 0:
+                                raise FinanceManagerException("AI Extraction Node", f"No valid price found for '{desc}'.", "Include an amount.")
+                                
+                            if desc == "Unknown Item":
+                                kb = InlineKeyboardMarkup([
+                                    [InlineKeyboardButton("Yes, save it", callback_data=f"confirm_unk:{amt}:{date.timestamp()}")],
+                                    [InlineKeyboardButton("No, cancel", callback_data="cancel_unk")]
+                                ])
+                                await bot.send_message(chat_id, f"⚠️ I found an amount (₹{amt}) but no item name.\nDo you want to save this anyway?", reply_markup=kb, reply_to_message_id=active_msg_id)
+                                
+                            elif check_duplicate(uid, amt, desc):
+                                await bot.send_message(chat_id, f"⚠️ Duplicate prevented for: {desc} - ₹{amt}", reply_to_message_id=active_msg_id)
+                                
+                            elif date > get_ist_now():
+                                kb = InlineKeyboardMarkup([
+                                    [InlineKeyboardButton("Yes", callback_data=f"yes_future:{amt}:{desc[:10]}:{date.isoformat()}"),
+                                     InlineKeyboardButton("No", callback_data="no_future")]
+                                ])
+                                await bot.send_message(chat_id, f"Future date detected for '{desc}': {date.strftime('%d-%m-%Y')}. Are you sure?", reply_markup=kb, reply_to_message_id=active_msg_id)
+                                
+                            else:
+                                last_cat_id = get_last_category(desc)
+                                if last_cat_id:
+                                    record = TransactionRecord(user_id=uid, amount=amt, category_id=last_cat_id, description=desc, transaction_date=date, remarks=text)
+                                    save_transaction(record)
+                                    cats = get_all_categories()
+                                    cat_name = next((c['category_name'] for c in cats if c['id'] == last_cat_id), "Other")
+                                    await bot.send_message(chat_id, f"✅ Auto-Saved: {desc} - ₹{amt} ({cat_name})", reply_to_message_id=active_msg_id)
+                                else:
+                                    categories = get_all_categories()
+                                    # Truncate description in callback payload to prevent 64-byte overflow
+                                    buttons = [[InlineKeyboardButton(c['category_name'], callback_data=f"cat:{c['id']}:{amt}:{desc[:10]}:{date.timestamp()}")] for c in categories]
+                                    await bot.send_message(chat_id, f"Select a category for '{desc}' (₹{amt}):", reply_markup=InlineKeyboardMarkup(buttons), reply_to_message_id=active_msg_id)
+                                    
+                        except FinanceManagerException as fme:
+                            # Discrete error logging for the isolated failed item
+                            error_msg = f"❌ **Error processing '{desc}'**\n⚠️ {fme.message}\n🔧 **Action:** {fme.action}"
+                            await bot.send_message(chat_id=chat_id, text=error_msg, parse_mode="Markdown", reply_to_message_id=active_msg_id)
 
     except FinanceManagerException as fme:
+        # Catches holistic batch failures
         error_msg = f"❌ **System Failure at [{fme.step}]**\n⚠️ {fme.message}\n🔧 **Action:** {fme.action}"
         if chat_id:
             await bot.send_message(chat_id=chat_id, text=error_msg, parse_mode="Markdown")
