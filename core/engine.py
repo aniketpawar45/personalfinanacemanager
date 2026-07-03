@@ -56,7 +56,7 @@ async def parse_expense_text(text: str) -> tuple[float, str, datetime]:
         if amt <= 0:
             raise FinanceManagerException(step="AI Extraction Node", message="No valid price found.", action="Include an amount (e.g., 'Milk 40').")
         if not item or item == str(amt) or item == "0.0":
-            raise FinanceManagerException(step="AI Extraction Node", message="No item name identified.", action="Specify what the expense was for.")
+            item = "Unknown Item"  # Replaced strict rejection with fallback state
             
         date_str = extraction.date_str or processed_text
         

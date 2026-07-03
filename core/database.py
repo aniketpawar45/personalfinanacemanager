@@ -73,7 +73,8 @@ def save_transaction(record: TransactionRecord) -> bool:
             "amount": record.amount,
             "category_id": record.category_id,
             "description": record.description.title(),
-            "transaction_date": record.transaction_date.isoformat()
+            "transaction_date": record.transaction_date.isoformat(),
+            "remarks": record.remarks
         }
         supabase.table("transactions").insert(data).execute()
         return True

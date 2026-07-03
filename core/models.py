@@ -13,3 +13,4 @@ class TransactionRecord(BaseModel):
     category_id: int
     description: str
     transaction_date: datetime
+    remarks: str = ""
