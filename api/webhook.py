@@ -15,6 +15,7 @@ from core.database import (
 from core.engine import parse_expense_text, transcribe_audio
 from core.models import TransactionRecord
 from core.utils import get_ist_now, FinanceManagerException, IST_TZ
+from api.reports import handle_report_command, handle_csv_export
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -65,6 +66,10 @@ async def handle_webhook(request: Request):
                 buttons = [[InlineKeyboardButton(c['category_name'], callback_data=f"cat:{c['id']}:{amt}:Unk:{date.timestamp()}")] for c in categories]
                 await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="Select a category for this unknown item:", reply_markup=InlineKeyboardMarkup(buttons))
             
+            elif data.startswith("csv:"):
+                _, start_ts, end_ts = data.split(":")
+                await handle_csv_export(bot, chat_id, uid, float(start_ts), float(end_ts))
+                await bot.answer_callback_query(q["id"], "Generating CSV...")
             elif data == "cancel_unk":
                 await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="❌ Entry cancelled. Please resend with the item name.")
                 
