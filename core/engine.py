@@ -1,11 +1,11 @@
 import os
-import json
+import re
 import logging
 import dateparser
-import re
 from datetime import datetime
 from groq import AsyncGroq
 from core.models import ExpenseExtraction
+from core.utils import get_ist_now, FinanceManagerException
 
 logger = logging.getLogger(__name__)
 
@@ -15,10 +15,8 @@ if not GROQ_API_KEY:
 
 client = AsyncGroq(api_key=GROQ_API_KEY)
 
-# 🚀 NEW: Voice-to-Text Transcription Engine
 async def transcribe_audio(audio_bytes: bytes) -> str:
     try:
-        # Groq expects a file tuple: (filename, file_content, content_type)
         file_tuple = ("voice_message.ogg", audio_bytes, "audio/ogg")
         response = await client.audio.transcriptions.create(
             file=file_tuple,
@@ -26,17 +24,13 @@ async def transcribe_audio(audio_bytes: bytes) -> str:
         )
         return response.text.strip()
     except Exception as e:
-        logger.error(f"Voice transcription failed: {str(e)}")
-        raise ValueError("I had trouble understanding that audio. Could you try typing it out?")
+        raise FinanceManagerException(
+            step="Audio Transcription Node",
+            message=f"Groq API transcription failed: {str(e)}",
+            action="USER ACTION REQUIRED: Please try typing out your expense instead."
+        )
 
-SYSTEM_PROMPT = """
-You are a highly precise financial extraction tool. 
-Extract the 'amount' (numeric float), 'item_name' (string), and 'date_str' (string, if mentioned).
-If no valid amount is found, return 0.0.
-If no valid item is found, return "".
-Return strictly valid JSON matching the exact schema requested. 
-Do NOT include any conversational text.
-"""
+SYSTEM_PROMPT = """You are a highly precise financial extraction tool. Extract 'amount', 'item_name', and 'date_str' into strict JSON. If no valid amount, return 0.0. If no valid item, return empty string."""
 
 async def parse_expense_text(text: str) -> tuple[float, str, datetime]:
     processed_text = re.sub(r'([a-zA-Z])(\d)', r'\1 \2', text)
@@ -60,36 +54,26 @@ async def parse_expense_text(text: str) -> tuple[float, str, datetime]:
         item = str(extraction.item_name).title().strip() if extraction.item_name else ""
         
         if amt <= 0:
-            raise ValueError(f"I couldn't find a valid price in '{text}'. Please include an amount (e.g., 'Milk 40').")
+            raise FinanceManagerException(step="AI Extraction Node", message="No valid price found.", action="Include an amount (e.g., 'Milk 40').")
         if not item or item == str(amt) or item == "0.0":
-            raise ValueError(f"I couldn't identify the item name in '{text}'. Please tell me what the expense was for.")
+            raise FinanceManagerException(step="AI Extraction Node", message="No item name identified.", action="Specify what the expense was for.")
             
         date_str = extraction.date_str or processed_text
         parsed_date = dateparser.parse(
             date_str,
-            settings={'PREFER_DATES_FROM': 'past', 'RELATIVE_BASE': datetime.now()}
-        ) or datetime.now()
+            settings={'PREFER_DATES_FROM': 'past', 'RELATIVE_BASE': get_ist_now(), 'TIMEZONE': 'Asia/Kolkata'}
+        ) or get_ist_now()
         
-        if parsed_date.year != datetime.now().year:
-            parsed_date = parsed_date.replace(year=datetime.now().year)
+        if parsed_date.year != get_ist_now().year:
+            parsed_date = parsed_date.replace(year=get_ist_now().year)
             
         return amt, item, parsed_date
-
-    except ValueError as ve:
-        raise ve
-    except Exception as e:
-        logger.warning(f"AI parsing failed completely: {str(e)}")
         
-        match = re.search(r'\d+(\.\d+)?', processed_text)
-        if not match:
-             raise ValueError(f"I couldn't understand the format of '{text}'. Please use a standard format like 'Uber 200'.")
-             
-        amt = float(match.group())
-        if amt <= 0:
-             raise ValueError(f"The amount must be greater than zero. You entered: '{text}'.")
-             
-        item_name = re.sub(r'\d+(\.\d+)?', '', processed_text).strip().title()
-        if not item_name:
-             raise ValueError(f"I found the amount ({amt}), but I couldn't find the item name in '{text}'.")
-             
-        return amt, item_name, datetime.now()
+    except FinanceManagerException:
+        raise
+    except Exception as e:
+        raise FinanceManagerException(
+            step="AI Parsing Engine",
+            message=f"Extraction failure: {str(e)}",
+            action="USER ACTION REQUIRED: Use standard format (e.g., 'Uber 200')."
+        )
