@@ -5,7 +5,7 @@ import dateparser
 from datetime import datetime
 from groq import AsyncGroq
 from core.models import ExpenseExtraction
-from core.utils import get_ist_now, FinanceManagerException
+from core.utils import get_ist_now, FinanceManagerException, IST_TZ
 
 logger = logging.getLogger(__name__)
 
@@ -59,13 +59,30 @@ async def parse_expense_text(text: str) -> tuple[float, str, datetime]:
             raise FinanceManagerException(step="AI Extraction Node", message="No item name identified.", action="Specify what the expense was for.")
             
         date_str = extraction.date_str or processed_text
+        
+        # ENTERPRISE HOTFIX: Forcing Offset-Aware Datetimes Natively
         parsed_date = dateparser.parse(
             date_str,
-            settings={'PREFER_DATES_FROM': 'past', 'RELATIVE_BASE': get_ist_now(), 'TIMEZONE': 'Asia/Kolkata'}
-        ) or get_ist_now()
+            settings={
+                'PREFER_DATES_FROM': 'past', 
+                'RELATIVE_BASE': get_ist_now(), 
+                'TIMEZONE': 'Asia/Kolkata',
+                'RETURN_AS_TIMEZONE_AWARE': True
+            }
+        )
         
-        if parsed_date.year != get_ist_now().year:
-            parsed_date = parsed_date.replace(year=get_ist_now().year)
+        # Fallback if parsing fails
+        if not parsed_date:
+            parsed_date = get_ist_now()
+            
+        # Failsafe: If dateparser still returns a naive datetime, localize it explicitly
+        if parsed_date.tzinfo is None:
+            parsed_date = IST_TZ.localize(parsed_date)
+        
+        # Keep the year within current bounds
+        current_year = get_ist_now().year
+        if parsed_date.year != current_year:
+            parsed_date = parsed_date.replace(year=current_year)
             
         return amt, item, parsed_date
         
