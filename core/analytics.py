@@ -114,3 +114,18 @@ def get_report_data(user_id: str, start: datetime.datetime, end: datetime.dateti
         .order("transaction_date", desc=True)\
         .execute()
     return response.data
+
+def get_statistics_data(user_id: str, start: datetime.datetime, end: datetime.datetime):
+    data = get_report_data(user_id, start, end)
+    if not data: return None
+    
+    # Aggregate category totals
+    cat_map = {}
+    total = 0
+    for item in data:
+        amt = float(item['amount'])
+        cat = item['categories']['category_name'] if item.get('categories') else "Other"
+        cat_map[cat] = cat_map.get(cat, 0) + amt
+        total += amt
+        
+    return {"total": total, "categories": cat_map}
