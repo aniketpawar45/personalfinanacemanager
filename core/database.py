@@ -32,14 +32,12 @@ def get_all_categories() -> list:
     return _CATEGORY_CACHE
 
 def get_user_role(telegram_id: str) -> str:
-    """Retrieves the explicit authorization role for a given Telegram ID."""
     try:
-        response = supabase.table("app_users").select("role").eq("telegram_id", str(telegram_id)).execute()
-        if response.data and len(response.data) > 0:
+        response = supabase.table("app_users").select("role").eq("telegram_id", telegram_id).execute()
+        if response.data:
             return response.data[0]['role']
         return "unauthenticated"
-    except Exception as e:
-        logger.error(f"Security Shield Lookup Failure for {telegram_id}: {str(e)}")
+    except Exception:
         return "unauthenticated"
 
 def get_last_category(description: str) -> int | None:
@@ -101,33 +99,16 @@ def get_user_stats(user_id: str) -> str:
     except Exception as e:
         raise FinanceManagerException(step="Database Fetch Node", message=str(e), action="Retry later.")
 
-def get_deletable_entries(user_id: str, start_dt, end_dt, limit: int = 5) -> list:
-    """Fetches the latest ledger entries within a given timeframe for selective deletion."""
+def get_global_stats() -> str:
     try:
-        query = supabase.table("transactions")\
-            .select("id, amount, description, transaction_date")\
-            .eq("user_id", str(user_id))\
-            .gte("transaction_date", start_dt.isoformat())\
-            .lte("transaction_date", end_dt.isoformat())\
-            .order("transaction_date", desc=True)\
-            .limit(limit)
-        response = query.execute()
-        return response.data if response.data else []
+        response = supabase.rpc("get_global_statistics").execute()
+        data = response.data
+        if not data:
+            return "No expenses logged in the global ledger."
+        total = sum(float(row['total_spent']) for row in data)
+        msg = f"**GLOBAL LEDGER Total: ₹{total:,.2f}**\n\n**Breakdown:**\n"
+        for row in data:
+            msg += f"{row.get('category_name', 'Other')}: ₹{float(row.get('total_spent', 0)):,.2f}\n"
+        return msg
     except Exception as e:
-        logger.error(f"Database Deletion Query Failure: {str(e)}")
-        return []
-
-def delete_transaction_batch(user_id: str, transaction_ids: list[int]) -> bool:
-    """Executes a hard deletion of targeted transaction records belonging to the user."""
-    try:
-        if not transaction_ids:
-            return False
-        supabase.table("transactions")\
-            .delete()\
-            .eq("user_id", str(user_id))\
-            .in_("id", transaction_ids)\
-            .execute()
-        return True
-    except Exception as e:
-        logger.error(f"Failed to execute ledger deletion batch: {str(e)}")
-        return False
+        raise FinanceManagerException(step="Database Fetch Node", message=str(e), action="Retry later.")
