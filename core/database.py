@@ -25,10 +25,8 @@ def get_scoped_client(telegram_id: str) -> Client:
     active user session by injecting custom session headers that enforce PostgreSQL RLS.
     """
     client = create_client(SUPABASE_URL, SUPABASE_KEY)
-    # Inject session variables into request headers for RLS policy valuation
-    client.table("transactions").auth(None) # Clear any default auth state
-    client.postgrest.auth(None)
-    # Append the application token context header
+
+    # CRITICAL FIX: Direct header injection without calling non-existent auth methods
     client.postgrest.headers.update({
         "X-Telegram-User-Id": str(telegram_id)
     })
