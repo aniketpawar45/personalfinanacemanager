@@ -10,7 +10,7 @@ from datetime import datetime
 from core.database import (
     save_transaction, get_all_categories, check_duplicate, 
     get_user_stats, get_global_stats, get_last_category, get_user_role,
-    load_categories_into_cache
+    load_categories_into_cache, supabase
 )
 from core.engine import parse_expense_text, transcribe_audio
 from core.models import TransactionRecord
@@ -155,30 +155,24 @@ async def handle_webhook(request: Request):
                     try:
                         parts = text.split(maxsplit=2)
                         if len(parts) < 3:
-                            raise ValueError("Format: /subscribe <daily|weekly|monthly> <email1,email2>")
+                            raise ValueError("Format: /subscribe <daily|weekly|monthly|yearly> <email1,email2>")
                         freq, emails = parts[1].lower(), parts[2]
                         if freq not in ['daily', 'weekly', 'monthly', 'yearly']:
                             raise ValueError("Frequency must be daily, weekly, monthly, or yearly.")
-                            
-                        # Insert Schedule
+
+                        # Corrected namespace usage
                         sched_data = {
                             "telegram_id": uid,
                             "frequency": freq,
                             "emails": emails,
-                            "scheduled_hour": 9 # Default IST 09:00 AM
+                            "scheduled_hour": 9
                         }
-                        # DEBUG: Detailed subscription error reporting
-                        try:
-                            supabase.table("report_schedules").insert(sched_data).execute()
-                            await bot.send_message(chat_id, f"✅ Subscribed successfully!\n📅 Frequency: {freq.capitalize()}\n📧 To: {emails}\n⏰ Time: 09:00 AM IST")
-                        except Exception as db_err:
-                            error_msg = f"❌ Database Insert Failed: {str(db_err)}"
-                            logger.error(error_msg)
-                            await bot.send_message(chat_id, error_msg)
-                    except ValueError as ve:
-                        await bot.send_message(chat_id, f"⚠️ {str(ve)}")
+                        supabase.table("report_schedules").insert(sched_data).execute()
+                        await bot.send_message(chat_id,
+                                               f"✅ Subscribed successfully!\n📅 Frequency: {freq.capitalize()}\n📧 To: {emails}\n⏰ Time: 09:00 AM IST")
                     except Exception as e:
-                        await bot.send_message(chat_id, "❌ Failed to create subscription in database.")
+                        logger.error(f"Subscription Error: {str(e)}")
+                        await bot.send_message(chat_id, f"❌ Database Insert Failed: {str(e)}")
                 elif text.startswith("/report"):
                     await handle_report_command(bot, chat_id, text, uid)
                 elif text.startswith("/allstats"):
