@@ -9,7 +9,7 @@ from datetime import datetime
 
 from core.database import (
     save_transaction, get_all_categories, check_duplicate,
-    get_user_stats, get_global_stats, get_last_category, get_user_role,
+    get_user_stats, get_last_category, get_user_role,
     load_categories_into_cache, supabase
 )
 from core.engine import parse_expense_text, transcribe_audio
@@ -181,11 +181,6 @@ async def handle_webhook(request: Request):
                     await handle_statistics_command(bot, chat_id, text, uid)
                 elif text.startswith("/report"):
                     await handle_report_command(bot, chat_id, text, uid)
-                elif text.startswith("/allstats"):
-                    if not is_admin:
-                        await bot.send_message(chat_id, "❌ Access Denied: Admin privileges required.")
-                    else:
-                        await bot.send_message(chat_id, get_global_stats(), parse_mode="Markdown")
                 elif text.startswith("/"):
                     await bot.send_message(chat_id, "⚠️ Unknown command. Use /report to see your ledger.")
 
