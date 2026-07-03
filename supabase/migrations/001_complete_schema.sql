@@ -27,11 +27,26 @@ CREATE TABLE IF NOT EXISTS report_schedules (
     last_sent_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
+ALTER TABLE public.report_schedules
+ADD CONSTRAINT unique_schedule_combination
+UNIQUE (telegram_id, frequency, emails, scheduled_hour);
 
 -- 4. Seed Core Categories required by code matching UX emojis
 INSERT INTO categories (category_name) VALUES
 ('Groceries'), ('Transport'), ('Utilities'), ('Dining'), ('Shopping'), ('Rent'), ('Entertainment'), ('Medical'), ('Other')
 ON CONFLICT (category_name) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS app_users (
+    telegram_id TEXT PRIMARY KEY,
+    username TEXT,
+    role TEXT NOT NULL DEFAULT 'user',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Register your Telegram ID right away to get instant access
+INSERT INTO app_users (telegram_id, username, role)
+VALUES ('7511999971', 'Aniket', 'admin')
+ON CONFLICT (telegram_id) DO NOTHING;
 
 -- 5. High-Performance RPC for /stats and /statistics command
 CREATE OR REPLACE FUNCTION get_user_statistics(p_user_id text)
