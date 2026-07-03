@@ -53,3 +53,23 @@ BEGIN
   ORDER BY SUM(t.amount) DESC;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
+
+
+INSERT INTO app_users (telegram_id, role) VALUES ('7511999971', 'admin');
+
+-- ENTERPRISE MIGRATION: Add remarks column for raw input preservation
+ALTER TABLE transactions
+ADD COLUMN IF NOT EXISTS remarks TEXT DEFAULT '';
+
+CREATE TABLE IF NOT EXISTS report_schedules (
+    id SERIAL PRIMARY KEY,
+    telegram_id TEXT NOT NULL,
+    frequency TEXT NOT NULL CHECK (frequency IN ('daily', 'weekly', 'monthly', 'yearly')),
+    scheduled_hour INTEGER DEFAULT 9, -- IST Hour (9 = 09:00 AM)
+    emails TEXT NOT NULL, -- Comma separated
+    last_sent_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Enable RLS for security isolation
+ALTER TABLE report_schedules ENABLE ROW LEVEL SECURITY;
