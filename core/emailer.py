@@ -29,6 +29,9 @@ def send_report_email(recipients: list, subject: str, body_text: str, csv_filena
             smtp.login(SMTP_EMAIL, SMTP_PASSWORD)
             smtp.send_message(msg)
             logger.info(f"Report successfully dispatched to {msg['To']}")
+    except smtplib.SMTPAuthenticationError:
+        logger.error("SMTP Auth Error: Check if SMTP_PASSWORD is a valid 16-char App Password.")
+        raise FinanceManagerException("SMTP Node", "Gmail Auth Failed.", "Verify your App Password.")
     except Exception as e:
         logger.error(f"SMTP Dispatch Failed: {str(e)}")
-        raise FinanceManagerException("SMTP Dispatch Node", "Failed to send email via Gmail.", "Verify App Passwords.")
+        raise FinanceManagerException("SMTP Node", f"Dispatch failed: {str(e)}", "Check SMTP settings.")
