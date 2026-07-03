@@ -59,17 +59,18 @@ async def handle_webhook(request: Request):
             uid = str(q["from"]["id"])
             data = q["data"]
             
-            if data.startswith("confirm_unk:"):
+            if data.startswith("csv:"):
+                _, start_ts, end_ts = data.split(":")
+                await handle_csv_export(bot, chat_id, uid, float(start_ts), float(end_ts))
+                await bot.answer_callback_query(q["id"], "Generating CSV...")
+            
+            elif data.startswith("confirm_unk:"):
                 _, amt, d_ts = data.split(":")
                 date = datetime.fromtimestamp(float(d_ts), tz=IST_TZ)
                 categories = get_all_categories()
                 buttons = [[InlineKeyboardButton(c['category_name'], callback_data=f"cat:{c['id']}:{amt}:Unk:{date.timestamp()}")] for c in categories]
                 await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="Select a category for this unknown item:", reply_markup=InlineKeyboardMarkup(buttons))
             
-            elif data.startswith("csv:"):
-                _, start_ts, end_ts = data.split(":")
-                await handle_csv_export(bot, chat_id, uid, float(start_ts), float(end_ts))
-                await bot.answer_callback_query(q["id"], "Generating CSV...")
             elif data == "cancel_unk":
                 await bot.edit_message_text(chat_id=chat_id, message_id=message_id, text="❌ Entry cancelled. Please resend with the item name.")
                 
@@ -145,24 +146,29 @@ async def handle_webhook(request: Request):
                 current_step = "Executing Command/Extraction"
                 await bot.send_chat_action(chat_id=chat_id, action='typing')
                 
+                # ENTERPRISE FIREWALL: Strict Command Routing
                 if text.startswith("/start"):
                     await bot.send_message(chat_id, "Send expenses (e.g., 'Coffee 40, Bread 30') or a Voice Note!")
                 elif text.startswith("/stats"):
                     await bot.send_message(chat_id, get_user_stats(uid), parse_mode="Markdown")
+                elif text.startswith("/report"):
+                    await handle_report_command(bot, chat_id, text, uid)
                 elif text.startswith("/allstats"):
                     if not is_admin:
                         await bot.send_message(chat_id, "❌ Access Denied: Admin privileges required.")
                     else:
                         await bot.send_message(chat_id, get_global_stats(), parse_mode="Markdown")
+                elif text.startswith("/"):
+                    await bot.send_message(chat_id, "⚠️ Unknown command. Use /report to see your ledger.")
+                
+                # AI EXTRACTION: Only executes if no '/' command was detected
                 else:
-                    # ENTERPRISE BATCH PROCESSING LOOP
                     categories = get_all_categories()
                     valid_cat_names = [c['category_name'] for c in categories]
                     extracted_items = await parse_expense_text(text, valid_cat_names)
                     
                     for amt, desc, date, ai_category in extracted_items:
                         try:
-                            # Isolate state and validation per item
                             if amt <= 0:
                                 raise FinanceManagerException("AI Extraction Node", f"No valid price found for '{desc}'.", "Include an amount.")
                                 
@@ -187,13 +193,10 @@ async def handle_webhook(request: Request):
                                 cat_id_to_use = None
                                 cat_name_to_display = "Other"
                                 
-                                # 1. Priority: Historical User Preference
                                 last_cat_id = get_last_category(desc)
                                 if last_cat_id:
                                     cat_id_to_use = last_cat_id
                                     cat_name_to_display = next((c['category_name'] for c in categories if c['id'] == last_cat_id), "Other")
-                                
-                                # 2. Priority: AI Autonomous Classification
                                 elif ai_category:
                                     for c in categories:
                                         if c['category_name'].lower() == ai_category.lower():
@@ -201,23 +204,19 @@ async def handle_webhook(request: Request):
                                             cat_name_to_display = c['category_name']
                                             break
                                             
-                                # Execution Routing
                                 if cat_id_to_use:
                                     record = TransactionRecord(user_id=uid, amount=amt, category_id=cat_id_to_use, description=desc, transaction_date=date, remarks=text)
                                     save_transaction(record)
                                     await bot.send_message(chat_id, f"✅ Auto-Saved: {desc} - ₹{amt} ({cat_name_to_display})", reply_to_message_id=active_msg_id)
                                 else:
-                                    # 3. Fallback: Manual User Selection
                                     buttons = [[InlineKeyboardButton(c['category_name'], callback_data=f"cat:{c['id']}:{amt}:{desc[:10]}:{date.timestamp()}")] for c in categories]
                                     await bot.send_message(chat_id, f"🤖 Unsure of category.\nSelect a category for '{desc}' (₹{amt}):", reply_markup=InlineKeyboardMarkup(buttons), reply_to_message_id=active_msg_id)
                                     
                         except FinanceManagerException as fme:
-                            # Discrete error logging for the isolated failed item
                             error_msg = f"❌ **Error processing '{desc}'**\n⚠️ {fme.message}\n🔧 **Action:** {fme.action}"
                             await bot.send_message(chat_id=chat_id, text=error_msg, parse_mode="Markdown", reply_to_message_id=active_msg_id)
 
     except FinanceManagerException as fme:
-        # Catches holistic batch failures
         error_msg = f"❌ **System Failure at [{fme.step}]**\n⚠️ {fme.message}\n🔧 **Action:** {fme.action}"
         if chat_id:
             await bot.send_message(chat_id=chat_id, text=error_msg, parse_mode="Markdown")
