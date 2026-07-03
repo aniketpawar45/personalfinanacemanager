@@ -1,4 +1,6 @@
 import aiohttp
+import json
+import urllib.parse
 from core.analytics import parse_date_range, get_statistics_data
 
 async def handle_chart_command(bot, chat_id, command, uid):
@@ -14,7 +16,7 @@ async def handle_chart_command(bot, chat_id, command, uid):
     labels = list(stats['categories'].keys())
     data = list(stats['categories'].values())
     
-    # Construct QuickChart URL (Neon Theme)
+    # Construct QuickChart Config
     chart_config = {
         "type": "pie",
         "data": {
@@ -24,8 +26,9 @@ async def handle_chart_command(bot, chat_id, command, uid):
         "options": {"title": {"display": True, "text": f"Expenditure: {label}"}}
     }
     
-    import json
-    encoded_config = json.dumps(chart_config)
+    # CRITICAL FIX: URL Encode the configuration string
+    json_config = json.dumps(chart_config)
+    encoded_config = urllib.parse.quote(json_config)
     chart_url = f"https://quickchart.io/chart?c={encoded_config}"
     
     await bot.send_photo(chat_id, photo=chart_url, caption=f"📊 *Visual Report: {label}*\n💰 *Total: ₹{stats['total']:,.2f}*")
