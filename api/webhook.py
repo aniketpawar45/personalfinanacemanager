@@ -17,6 +17,7 @@ from core.models import TransactionRecord
 from core.utils import get_ist_now, FinanceManagerException, IST_TZ
 from api.reports import handle_report_command, handle_csv_export
 from api.stats import handle_statistics_command
+from api.chart import handle_chart_command
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -174,6 +175,8 @@ async def handle_webhook(request: Request):
                     except Exception as e:
                         logger.error(f"Subscription Error: {str(e)}")
                         await bot.send_message(chat_id, f"❌ Database Insert Failed: {str(e)}")
+                elif text.startswith("/chart"):
+                    await handle_chart_command(bot, chat_id, text, uid)
                 elif text.startswith("/statistics"):
                     await handle_statistics_command(bot, chat_id, text, uid)
                 elif text.startswith("/report"):
