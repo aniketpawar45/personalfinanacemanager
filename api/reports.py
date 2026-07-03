@@ -93,3 +93,31 @@ async def handle_csv_export(bot: Bot, chat_id: int, uid: str, start_ts: float, e
             mem_file.close()
         if 'byte_stream' in locals():
             byte_stream.close()
+
+async def handle_subscribe_command(bot, chat_id, text, uid):
+    """Handles the /subscribe command to save email reports to the database."""
+    parts = text.split(" ")
+    if len(parts) < 2 or "@" not in parts[1]:
+        await bot.send_message(
+            chat_id, 
+            "❌ *Invalid Format*\n🔧 *Action:* Use `/subscribe your_email@gmail.com`"
+        )
+        return
+        
+    email = parts[1].strip().lower()
+    
+    try:
+        from core.supabase_client import supabase
+        # Upsert or insert the subscription state for this user id
+        data, count = supabase.table("report_schedules").upsert({
+            "user_id": uid,
+            "email": email,
+            "is_active": True
+        }, on_conflict="user_id").execute()
+        
+        await bot.send_message(
+            chat_id, 
+            f"✅ *Subscription Active!*\n📬 Daily financial summaries will be routed to `{email}` automatically."
+        )
+    except Exception as e:
+        await bot.send_message(chat_id, f"❌ Failed to register subscription: {str(e)}")
