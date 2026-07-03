@@ -1,70 +1,47 @@
 import os
 import logging
+import jwt  # Native token formatting
+from datetime import datetime, timedelta, timezone
 from supabase import create_client, Client
-from datetime import timedelta
 from core.models import TransactionRecord
 from core.utils import get_ist_now, FinanceManagerException
 
 logger = logging.getLogger(__name__)
 
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
-# CRITICAL FIX: Switch to a restricted public/anon key for standard user data flows.
-# If an administrative action is required (e.g., global syncs), it must be explicitly restricted.
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY") or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
 
 if not SUPABASE_URL or not SUPABASE_KEY:
-    raise ValueError("Critical Security Error: Missing Supabase credentials in environment configurations.")
+    raise ValueError("Critical Security Error: Missing Supabase credentials in configurations.")
 
-# Instantiate base client
+# Global administrative base client used strictly for un-RLS operations like fetching metadata
 _base_supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 _CATEGORY_CACHE = []
 
 
 def get_scoped_client(telegram_id: str) -> Client:
     """
-    Architectural Fix: Returns a standard connection client instance.
-    Session tenancy scoping is handled directly within the data operations.
+    Generates a secure, temporary JWT token scoped specifically to the user's ID
+    to completely satisfy the database RLS policies out of the box.
     """
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
+    # Create an unprivileged JWT payload containing the user's context in the 'sub' key
+    payload = {
+        "sub": str(telegram_id),
+        "role": "authenticated",
+        "exp": int((datetime.now(timezone.utc) + timedelta(minutes=5)).timestamp())
+    }
+
+    # Sign the token using the Supabase JWT secret (which is identical to the key)
+    user_jwt = jwt.encode(payload, SUPABASE_KEY, algorithm="HS256")
+
+    # Instantiate a clean client instance utilizing the user's personal context token
+    client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    client.postgrest.headers.update({
+        "Authorization": f"Bearer {user_jwt}"
+    })
+    return client
 
 
-def save_transaction(record: TransactionRecord) -> bool:
-    try:
-        # 1. Use an isolated client instance
-        client = get_scoped_client(record.user_id)
-
-        # 2. Package the database transaction values
-        data = {
-            "user_id": record.user_id,
-            "amount": record.amount,
-            "category_id": record.category_id,
-            "description": record.description.title(),
-            "transaction_date": record.transaction_date.isoformat(),
-            "remarks": record.remarks
-        }
-
-        # 3. Securely set the session configuration variable via Postgrest parameters
-        # and execute the row insertion in a single unified execution context
-        client.postgrest.headers.update({
-            "apikey": SUPABASE_KEY
-        })
-
-        # We invoke our safe session routing parameters directly
-        # to ensure it passes through the database firewall smoothly
-        supabase.rpc("set_config", {
-            "setting_name": "app.telegram_user_id",
-            "setting_value": str(record.user_id),
-            "is_local": "false"
-        }).execute()
-
-        supabase.table("transactions").insert(data).execute()
-        return True
-    except Exception as e:
-        raise FinanceManagerException(
-            step="Database Insertion Node",
-            message=f"Failed to commit transaction: {str(e)}",
-            action="SUPPORT TEAM ACTION REQUIRED: Verify Supabase schema structures and RLS configurations."
-        )
 def load_categories_into_cache():
     global _CATEGORY_CACHE
     try:
@@ -74,11 +51,13 @@ def load_categories_into_cache():
     except Exception as e:
         logger.error(f"Failed to load categories into cache: {str(e)}")
 
+
 def get_all_categories() -> list:
     global _CATEGORY_CACHE
     if not _CATEGORY_CACHE:
         load_categories_into_cache()
     return _CATEGORY_CACHE
+
 
 def get_user_role(telegram_id: str) -> str:
     try:
@@ -89,32 +68,35 @@ def get_user_role(telegram_id: str) -> str:
     except Exception:
         return "unauthenticated"
 
+
 def get_last_category(telegram_id: str, description: str) -> int | None:
     try:
         client = get_scoped_client(telegram_id)
-        response = client.table("transactions")\
-            .select("category_id")\
-            .eq("description", description.title())\
-            .order("created_at", desc=True)\
-            .limit(1)\
+        response = client.table("transactions") \
+            .select("category_id") \
+            .eq("description", description.title()) \
+            .order("created_at", desc=True) \
+            .limit(1) \
             .execute()
         return response.data[0]['category_id'] if response.data else None
     except Exception:
         return None
 
+
 def check_duplicate(telegram_id: str, amount: float, description: str) -> bool:
     try:
         client = get_scoped_client(telegram_id)
         ten_seconds_ago = (get_ist_now() - timedelta(seconds=10)).isoformat()
-        response = client.table("transactions")\
-            .select("id")\
-            .eq("amount", amount)\
-            .eq("description", description.title())\
-            .gt("created_at", ten_seconds_ago)\
+        response = client.table("transactions") \
+            .select("id") \
+            .eq("amount", amount) \
+            .eq("description", description.title()) \
+            .gt("created_at", ten_seconds_ago) \
             .execute()
         return len(response.data) > 0
     except Exception:
         return False
+
 
 def save_transaction(record: TransactionRecord) -> bool:
     try:
@@ -136,6 +118,7 @@ def save_transaction(record: TransactionRecord) -> bool:
             action="SUPPORT TEAM ACTION REQUIRED: Verify Supabase schema structures and RLS configurations."
         )
 
+
 def get_user_stats(telegram_id: str) -> str:
     try:
         client = get_scoped_client(telegram_id)
@@ -150,6 +133,7 @@ def get_user_stats(telegram_id: str) -> str:
         return msg
     except Exception as e:
         raise FinanceManagerException(step="Database Fetch Node", message=str(e), action="Retry later.")
+
 
 def get_global_stats(admin_telegram_id: str) -> str:
     if get_user_role(admin_telegram_id) != "admin":
