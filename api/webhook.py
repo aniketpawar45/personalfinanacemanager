@@ -151,6 +151,28 @@ async def handle_webhook(request: Request):
                     await bot.send_message(chat_id, "Send expenses (e.g., 'Coffee 40, Bread 30') or a Voice Note!")
                 elif text.startswith("/stats"):
                     await bot.send_message(chat_id, get_user_stats(uid), parse_mode="Markdown")
+                elif text.startswith("/subscribe"):
+                    try:
+                        parts = text.split(maxsplit=2)
+                        if len(parts) < 3:
+                            raise ValueError("Format: /subscribe <daily|weekly|monthly> <email1,email2>")
+                        freq, emails = parts[1].lower(), parts[2]
+                        if freq not in ['daily', 'weekly', 'monthly', 'yearly']:
+                            raise ValueError("Frequency must be daily, weekly, monthly, or yearly.")
+                            
+                        # Insert Schedule
+                        sched_data = {
+                            "telegram_id": uid,
+                            "frequency": freq,
+                            "emails": emails,
+                            "scheduled_hour": 9 # Default IST 09:00 AM
+                        }
+                        supabase.table("report_schedules").insert(sched_data).execute()
+                        await bot.send_message(chat_id, f"✅ Subscribed successfully!\n📅 Frequency: {freq.capitalize()}\n📧 To: {emails}\n⏰ Time: 09:00 AM IST")
+                    except ValueError as ve:
+                        await bot.send_message(chat_id, f"⚠️ {str(ve)}")
+                    except Exception as e:
+                        await bot.send_message(chat_id, "❌ Failed to create subscription in database.")
                 elif text.startswith("/report"):
                     await handle_report_command(bot, chat_id, text, uid)
                 elif text.startswith("/allstats"):
@@ -234,4 +256,4 @@ async def handle_webhook(request: Request):
             audio_bytes = None
         gc.collect()
         
-        return {"status": "ok"}
+    return {"status": "ok"}
